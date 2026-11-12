@@ -18,7 +18,7 @@ import { MODELS } from './models.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
-const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || '';
+const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || 'brysj';
 const DEFAULT_REGION = process.env.VERTEX_REGION || 'us-central1';
 
 // ---------- 代理自动探测与挂载（解决国内 Windows 开启系统代理但未设环境变量导致 Node fetch 超时/断连） ----------
@@ -118,14 +118,43 @@ function resolveLocation(model, fallback) {
   return fallback || 'global';
 }
 
-// ---------- 访问密码（部署给朋友时开启） ----------
+// ---------- 访问密码与朋友昵称登录认证（默认口令 brysj） ----------
 const tokenOf = (pwd) => crypto.createHash('sha256').update('gemini-tiyan:' + pwd).digest('hex');
 const VALID_TOKEN = ACCESS_PASSWORD ? tokenOf(ACCESS_PASSWORD) : '';
+
+function makeUserToken(nickname = 'default') {
+  const b64 = Buffer.from(String(nickname).trim(), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD).update(b64).digest('hex');
+  return `${b64}.${sig}`;
+}
+
+function parseUserToken(token = '') {
+  if (!ACCESS_PASSWORD) return { ok: true, nickname: 'default' };
+  if (!token) return { ok: false };
+  if (token.includes('.')) {
+    const [b64, sig] = token.split('.');
+    const expected = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD).update(b64 || '').digest('hex');
+    if (sig && sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+      const nickname = Buffer.from(b64, 'base64url').toString('utf8') || 'default';
+      return { ok: true, nickname };
+    }
+    return { ok: false };
+  }
+  if (token.length === VALID_TOKEN.length && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(VALID_TOKEN))) {
+    return { ok: true, nickname: 'default' };
+  }
+  return { ok: false };
+}
+
 function auth(req, res, next) {
-  if (!ACCESS_PASSWORD) return next();
   const t = req.get('x-access-token') || req.query.token || '';
-  if (t.length === VALID_TOKEN.length && crypto.timingSafeEqual(Buffer.from(t), Buffer.from(VALID_TOKEN))) return next();
-  res.status(401).json({ error: '需要访问密码' });
+  const parsed = parseUserToken(t);
+  if (!parsed.ok) return res.status(401).json({ error: '请先输入昵称与访问密码登录' });
+  const headerNick = req.get('x-user-nickname') ? decodeURIComponent(req.get('x-user-nickname')) : '';
+  req.userNickname = (headerNick || parsed.nickname || 'default').trim();
+  const u = usersRegistry.users?.[safeUserKey(req.userNickname)];
+  if (u?.blocked) return res.status(403).json({ error: `昵称「${req.userNickname}」已被管理员停用` });
+  next();
 }
 
 const app = express();
@@ -139,12 +168,7 @@ app.use('/vendor/hljs', express.static(nm('@highlightjs/cdn-assets')));
 app.use('/vendor/katex', express.static(nm('katex/dist')));
 
 app.get('/api/config', (req, res) => {
-  res.json({ needPassword: !!ACCESS_PASSWORD, project: PROJECT, memoryBucket: MEMORY_BUCKET, models: MODELS });
-});
-app.post('/api/login', (req, res) => {
-  if (!ACCESS_PASSWORD) return res.json({ token: '' });
-  if ((req.body?.password || '') !== ACCESS_PASSWORD) return res.status(401).json({ error: '密码错误' });
-  res.json({ token: VALID_TOKEN });
+  res.json({ needPassword: !!ACCESS_PASSWORD, requireNickname: true, project: PROJECT, memoryBucket: MEMORY_BUCKET, models: MODELS });
 });
 
 const errMsg = (e) => {
@@ -160,6 +184,7 @@ try {
   LOCAL_MEM_DIR = path.join(os.tmpdir(), 'gemini-tiyan-memories');
   try { fs.mkdirSync(LOCAL_MEM_DIR, { recursive: true }); } catch {}
 }
+const LOCAL_USERS_FILE = path.join(path.dirname(LOCAL_MEM_DIR), 'users.json');
 
 function safeUserKey(raw = 'default') {
   const s = String(raw || 'default').trim().toLowerCase().slice(0, 64);
@@ -213,6 +238,144 @@ async function gcsWriteJson(objectName, data) {
   });
   if (!r.ok) throw new Error(`GCS 写入失败 (${r.status})`);
 }
+
+// ---------- 用户登记与用量管理中心（本地 data/users.json + GCS admin/users.json 双重持久化） ----------
+let usersRegistry = { users: {}, updatedAt: 0 };
+try {
+  if (fs.existsSync(LOCAL_USERS_FILE)) usersRegistry = JSON.parse(fs.readFileSync(LOCAL_USERS_FILE, 'utf8'));
+} catch {}
+
+function saveLocalUsers() {
+  try { fs.writeFileSync(LOCAL_USERS_FILE, JSON.stringify(usersRegistry, null, 2), 'utf8'); } catch {}
+}
+
+function mergeUserEntry(a = {}, b = {}) {
+  const newerBlock = (b.blockedUpdatedAt || 0) > (a.blockedUpdatedAt || 0) ? b : a;
+  const newerAct = (b.lastActiveAt || 0) >= (a.lastActiveAt || 0) ? b : a;
+  return {
+    nickname: newerAct.nickname || a.nickname || b.nickname || '未命名',
+    userKey: a.userKey || b.userKey,
+    firstSeenAt: Math.min(a.firstSeenAt || Infinity, b.firstSeenAt || Infinity) === Infinity ? Date.now() : Math.min(a.firstSeenAt || Infinity, b.firstSeenAt || Infinity),
+    lastLoginAt: Math.max(a.lastLoginAt || 0, b.lastLoginAt || 0),
+    lastActiveAt: Math.max(a.lastActiveAt || 0, b.lastActiveAt || 0),
+    loginCount: Math.max(a.loginCount || 0, b.loginCount || 0),
+    chatCount: Math.max(a.chatCount || 0, b.chatCount || 0),
+    imageCount: Math.max(a.imageCount || 0, b.imageCount || 0),
+    videoCount: Math.max(a.videoCount || 0, b.videoCount || 0),
+    ttsCount: Math.max(a.ttsCount || 0, b.ttsCount || 0),
+    lastModel: newerAct.lastModel || a.lastModel || b.lastModel || '',
+    lastPromptPreview: newerAct.lastPromptPreview || a.lastPromptPreview || b.lastPromptPreview || '',
+    blocked: !!newerBlock.blocked,
+    blockedUpdatedAt: Math.max(a.blockedUpdatedAt || 0, b.blockedUpdatedAt || 0),
+  };
+}
+
+async function syncUsersFromCloud() {
+  try {
+    const cloud = await gcsReadJson('admin/users.json');
+    if (cloud?.users) {
+      const merged = { ...usersRegistry.users };
+      const deleted = new Set(cloud.deletedKeys || []);
+      for (const [k, v] of Object.entries(cloud.users)) {
+        if (deleted.has(k)) continue;
+        merged[k] = merged[k] ? mergeUserEntry(merged[k], v) : v;
+      }
+      usersRegistry.users = merged;
+      usersRegistry.deletedKeys = [...deleted];
+      usersRegistry.updatedAt = Math.max(usersRegistry.updatedAt || 0, cloud.updatedAt || 0);
+      saveLocalUsers();
+    }
+  } catch {}
+  return usersRegistry;
+}
+
+async function persistUsersToCloud() {
+  saveLocalUsers();
+  try { await gcsWriteJson('admin/users.json', usersRegistry); } catch {}
+}
+
+async function recordUserActivity(rawNickname, event = {}) {
+  const nickname = String(rawNickname || 'default').trim().slice(0, 32) || 'default';
+  const userKey = safeUserKey(nickname);
+  if (!usersRegistry.users) usersRegistry.users = {};
+  const now = Date.now();
+  const cur = usersRegistry.users[userKey] || {
+    nickname, userKey, firstSeenAt: now, lastLoginAt: now, lastActiveAt: now,
+    loginCount: 0, chatCount: 0, imageCount: 0, videoCount: 0, ttsCount: 0,
+    lastModel: '', lastPromptPreview: '', blocked: false, blockedUpdatedAt: 0,
+  };
+  cur.nickname = nickname;
+  cur.lastActiveAt = now;
+  if (event.type === 'login') { cur.loginCount = (cur.loginCount || 0) + 1; cur.lastLoginAt = now; }
+  if (event.type === 'chat') cur.chatCount = (cur.chatCount || 0) + 1;
+  if (event.type === 'image') cur.imageCount = (cur.imageCount || 0) + 1;
+  if (event.type === 'video') cur.videoCount = (cur.videoCount || 0) + 1;
+  if (event.type === 'tts') cur.ttsCount = (cur.ttsCount || 0) + 1;
+  if (event.model) cur.lastModel = event.model;
+  if (event.preview) cur.lastPromptPreview = String(event.preview).replace(/\s+/g, ' ').trim().slice(0, 80);
+  usersRegistry.users[userKey] = cur;
+  usersRegistry.updatedAt = now;
+  await persistUsersToCloud();
+  return cur;
+}
+
+// 启动时后台拉取一次云端用户账本
+syncUsersFromCloud();
+
+app.post('/api/login', async (req, res) => {
+  const nickname = String(req.body?.nickname || '').trim().slice(0, 32);
+  const password = String(req.body?.password || '');
+  if (!nickname) return res.status(400).json({ error: '请先填写你的昵称（方便为你独立保存记忆与对话）' });
+  if (ACCESS_PASSWORD && password !== ACCESS_PASSWORD) {
+    return res.status(401).json({ error: '访问密码错误，请输入正确的口令' });
+  }
+  await syncUsersFromCloud();
+  const userKey = safeUserKey(nickname);
+  if (usersRegistry.users?.[userKey]?.blocked) {
+    return res.status(403).json({ error: `昵称「${nickname}」已被管理员停用` });
+  }
+  const entry = await recordUserActivity(nickname, { type: 'login' });
+  res.json({ token: makeUserToken(nickname), nickname: entry.nickname, userKey });
+});
+
+// 管理员接口：查看全部朋友列表及实时用量统计
+app.get('/api/admin/users', auth, async (req, res) => {
+  try {
+    await syncUsersFromCloud();
+    const list = Object.values(usersRegistry.users || {}).sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
+    res.json({
+      users: list,
+      accessPassword: ACCESS_PASSWORD,
+      bucket: MEMORY_BUCKET,
+      updatedAt: usersRegistry.updatedAt || Date.now(),
+    });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// 管理员接口：停用/启用或删除某个用户
+app.post('/api/admin/user-action', auth, async (req, res) => {
+  try {
+    const { userKey, action } = req.body || {};
+    await syncUsersFromCloud();
+    const u = usersRegistry.users?.[userKey];
+    if (!u) return res.status(404).json({ error: '未找到该用户' });
+    if (action === 'toggleBlock') {
+      u.blocked = !u.blocked;
+      u.blockedUpdatedAt = Date.now();
+      usersRegistry.updatedAt = Date.now();
+      await persistUsersToCloud();
+      return res.json({ ok: true, user: u });
+    }
+    if (action === 'deleteUser') {
+      delete usersRegistry.users[userKey];
+      usersRegistry.deletedKeys = [...new Set([...(usersRegistry.deletedKeys || []), userKey])];
+      usersRegistry.updatedAt = Date.now();
+      await persistUsersToCloud();
+      return res.json({ ok: true });
+    }
+    res.status(400).json({ error: '未知操作' });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
 
 function readLocalMemory(userKey) {
   const f = path.join(LOCAL_MEM_DIR, `${userKey}.json`);
@@ -395,6 +558,12 @@ app.post('/api/chat', auth, async (req, res) => {
 
   try {
     const { model } = req.body;
+    const lastUserPart = [...(req.body.contents || [])].reverse().find((c) => c.role === 'user')?.parts?.find((p) => p.text)?.text || '';
+    recordUserActivity(req.userNickname, {
+      type: req.body.kind === 'image' ? 'image' : 'chat',
+      model,
+      preview: lastUserPart,
+    });
     const location = resolveLocation(model, req.body.location);
     const config = { ...buildConfig(req.body), abortSignal: abort.signal };
     const stream = await client(location).models.generateContentStream({
@@ -429,6 +598,7 @@ function pcmToWav(pcm, rate = 24000, channels = 1, bits = 16) {
 app.post('/api/tts', auth, async (req, res) => {
   try {
     const { model, text, voice = 'Kore', style } = req.body;
+    recordUserActivity(req.userNickname, { type: 'tts', model, preview: text });
     const r = await client(resolveLocation(model, req.body.location)).models.generateContent({
       model, contents: style ? `${style}：${text}` : text,
       config: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
@@ -456,6 +626,7 @@ function isOmniVideoModel(model = '') {
 app.post('/api/video', auth, async (req, res) => {
   try {
     const { model, prompt = '', image, lastFrame, images = [], settings = {} } = req.body;
+    recordUserActivity(req.userNickname, { type: 'video', model, preview: prompt });
     const id = crypto.randomUUID();
 
     // 通道 A：Gemini Omni 视频模型（Vertex AI Interactions API，global 区域）

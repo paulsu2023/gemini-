@@ -63,13 +63,16 @@ const state = {
   models: [], custom: LS.get('customModels', []), convs: [], conv: null,
   prefs: {
     defaultModel: 'gemini-3.8-flash', defaultPreset: 'none', theme: 'light', sendKey: 'enter',
-    memoryUser: 'default', memoryEnabled: true, memoryAutoExtract: true, memoryCloudSync: true,
+    memoryUser: LS.get('lastNickname', '') || 'default', memoryEnabled: true, memoryAutoExtract: true, memoryCloudSync: true,
     ...LS.get('prefs', {}),
   },
   defaults: { ...DEFAULT_SETTINGS, ...LS.get('defaults', {}) },
   presets: LS.get('presets', null) || DEFAULT_PRESETS,
   memories: [], memoryBucket: '', memoryCloudOk: false,
-  token: LS.get('token', ''), busy: false, abort: null, attachments: [], needPassword: false,
+  nickname: LS.get('lastNickname', ''),
+  adminUsers: [], adminPassword: 'brysj', adminInspectHtml: '',
+  // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
+  token: '', busy: false, abort: null, attachments: [], needPassword: true,
 };
 const allModels = () => [...state.models, ...state.custom];
 const modelInfo = (id) => allModels().find((m) => m.id === id) || { id, name: id, kind: 'chat', location: 'global' };
@@ -149,8 +152,16 @@ async function autoExtractMemories(conv) {
 
 // ---------------- API ----------------
 async function api(path, opts = {}) {
-  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', 'x-access-token': state.token, ...(opts.headers || {}) } });
-  if (res.status === 401) { showLogin(); throw new Error('需要访问密码'); }
+  const nick = encodeURIComponent(state.nickname || state.prefs.memoryUser || 'default');
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', 'x-access-token': state.token, 'x-user-nickname': nick, ...(opts.headers || {}) },
+  });
+  if (res.status === 401 || res.status === 403) {
+    const j = await res.clone().json().catch(() => ({}));
+    showLogin(j.error || '请先输入昵称与访问密码登录');
+    throw new Error(j.error || '需要登录');
+  }
   return res;
 }
 async function apiJSON(path, body) {
@@ -232,6 +243,14 @@ async function saveConv(c = state.conv) {
   const i = state.convs.findIndex((x) => x.id === c.id);
   if (i >= 0) state.convs[i] = c; else state.convs.unshift(c);
   renderConvList();
+  // 自动将该昵称下的对话轻量同步到 Google Cloud 免费桶，方便换设备恢复与管理员查看
+  clearTimeout(saveConv._cloudTimer);
+  saveConv._cloudTimer = setTimeout(async () => {
+    if (!state.token || state.prefs.memoryCloudSync === false) return;
+    try {
+      await apiJSON('/api/cloud-convs', { user: state.prefs.memoryUser || state.nickname || 'default', convs: state.convs });
+    } catch {}
+  }, 1500);
 }
 function openConv(c) {
   if (state.busy) stopGen();
@@ -803,17 +822,36 @@ $('#panelBody').addEventListener('click', (e) => {
 $('#togglePanel').onclick = () => { $('#panel').classList.toggle('closed'); LS.set('panelClosed', $('#panel').classList.contains('closed')); };
 $('#closePanel').onclick = () => { $('#panel').classList.add('closed'); LS.set('panelClosed', true); };
 
-// ---------------- 设置弹窗 ----------------
+// ---------------- 设置弹窗与管理员后台 ----------------
 let settingsTab = 'prompts', editingPreset = null;
-function openSettings(tab = 'prompts') { settingsTab = tab; renderSettings(); $('#settingsDialog').showModal(); }
+const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+
+async function loadAdminUsers() {
+  try {
+    const r = await apiJSON('/api/admin/users');
+    state.adminUsers = r.users || [];
+    state.adminPassword = r.accessPassword || 'brysj';
+    state.memoryBucket = r.bucket || state.memoryBucket;
+    if (settingsTab === 'admin') renderSettings();
+  } catch (e) {
+    toast('加载用户列表失败：' + e.message);
+  }
+}
+
+function openSettings(tab = 'prompts') {
+  settingsTab = tab;
+  renderSettings();
+  $('#settingsDialog').showModal();
+  if (tab === 'admin') loadAdminUsers();
+}
 function renderSettings() {
   $$('#settingsTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === settingsTab));
   const body = $('#settingsBody');
   if (settingsTab === 'memory') {
-    const user = state.prefs.memoryUser || 'default';
+    const user = state.prefs.memoryUser || state.nickname || 'default';
     body.innerHTML = `<div class="mem-bar">
-      <span>👤 记忆空间标识：</span>
-      <input id="memUserInput" value="${esc(user)}" placeholder="如 paul 或朋友昵称" title="不同标识的记忆彼此独立，线上和朋友共用网址也不会串记忆">
+      <span>👤 记忆空间（昵称）：</span>
+      <input id="memUserInput" value="${esc(user)}" placeholder="如 小明 或朋友昵称" title="不同昵称的记忆彼此独立，线上和朋友共用网址也不会串记忆">
       <button type="button" class="btn" id="memSwitchUser">切换/拉取</button>
       <button type="button" class="btn" id="memExtractNow">✨ 从当前对话提炼</button>
       <span class="mem-status">${state.memoryCloudOk ? `☁ Google 免费云已连接 (${esc(state.memoryBucket)})` : '💾 本地存储已就绪'}</span>
@@ -832,6 +870,38 @@ function renderSettings() {
       <span class="txt">${esc(m.content)}</span>
       <span class="ops"><button type="button" data-mact="edit">编辑</button><button type="button" data-mact="del">删除</button></span>
     </div>`).join('') : '<p class="hint">还没有长期记忆。你可以在上面手动添加，或者在聊天里直接说“记住我喜欢……”，AI 会自动帮你记住。</p>'}</div>`;
+  } else if (settingsTab === 'admin') {
+    const users = state.adminUsers || [];
+    const totalCalls = users.reduce((s, u) => s + (u.chatCount || 0) + (u.imageCount || 0) + (u.videoCount || 0) + (u.ttsCount || 0), 0);
+    body.innerHTML = `<div class="admin-bar">
+      <div>🔑 访问口令：<code>${esc(state.adminPassword || 'brysj')}</code> &nbsp;·&nbsp; 👥 已登录朋友：<b>${users.length}</b> 人 &nbsp;·&nbsp; ⚡ 累计调用：<b>${totalCalls}</b> 次 &nbsp;·&nbsp; ☁ 云桶：<code>${esc(state.memoryBucket || '')}</code></div>
+      <button type="button" class="btn" id="adminRefresh">🔄 刷新列表</button>
+    </div>
+    <div class="admin-user-list">${users.length ? users.map((u) => `<div class="admin-user-card ${u.blocked ? 'blocked' : ''}" data-ukey="${esc(u.userKey)}" data-unick="${esc(u.nickname)}">
+      <div class="admin-user-top">
+        <div class="admin-user-name">
+          <span>👤 ${esc(u.nickname)}</span>
+          <span class="admin-tag ${u.blocked ? 'err' : 'ok'}">${u.blocked ? '🚫 已停用' : '🟢 正常'}</span>
+          <small style="font-weight:400;color:var(--ink-3)">最后活跃：${fmtTime(u.lastActiveAt)} · 首次登录：${fmtTime(u.firstSeenAt)}</small>
+        </div>
+        <div class="admin-ops">
+          <button type="button" class="btn" data-aact="mem">🧠 查看/管记忆</button>
+          <button type="button" class="btn" data-aact="convs">💬 查看对话</button>
+          <button type="button" class="btn ${u.blocked ? '' : 'danger'}" data-aact="block">${u.blocked ? '✅ 恢复使用' : '🚫 停用昵称'}</button>
+          <button type="button" class="btn danger" data-aact="del">🗑</button>
+        </div>
+      </div>
+      <div class="admin-stats">
+        <span>🔑 登录 <b>${u.loginCount || 0}</b> 次</span>
+        <span>💬 对话 <b>${u.chatCount || 0}</b> 次</span>
+        <span>🎨 画图 <b>${u.imageCount || 0}</b> 张</span>
+        <span>🎬 视频 <b>${u.videoCount || 0}</b> 条</span>
+        <span>🔊 语音 <b>${u.ttsCount || 0}</b> 次</span>
+        ${u.lastModel ? `<span>🤖 最近模型：<code>${esc(u.lastModel)}</code></span>` : ''}
+      </div>
+      ${u.lastPromptPreview ? `<div class="admin-preview" title="${esc(u.lastPromptPreview)}">最近提问：${esc(u.lastPromptPreview)}</div>` : ''}
+    </div>`).join('') : '<p class="hint">暂无朋友登录记录。朋友输入昵称与密码 <code>brysj</code> 登录后会自动出现在这里。</p>'}</div>
+    ${state.adminInspectHtml ? `<div class="admin-inspect">${state.adminInspectHtml}</div>` : ''}`;
   } else if (settingsTab === 'prompts') {
     editingPreset = editingPreset && state.presets.find((p) => p.id === editingPreset.id) || state.presets[1] || state.presets[0];
     body.innerHTML = `<div class="preset-layout"><div class="preset-list">
@@ -862,9 +932,67 @@ function renderSettings() {
       <p>模型列表在服务端 <code>models.js</code> 中维护；也可以在顶部模型菜单底部添加任意 Vertex 模型 ID 尝鲜。</p></div>`;
   }
 }
-$('#settingsTabs').addEventListener('click', (e) => { const t = e.target.closest('[data-tab]'); if (t) { settingsTab = t.dataset.tab; renderSettings(); } });
+$('#settingsTabs').addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab]');
+  if (t) {
+    settingsTab = t.dataset.tab;
+    renderSettings();
+    if (settingsTab === 'admin') loadAdminUsers();
+  }
+});
 $('#settingsBody').addEventListener('click', async (e) => {
   const t = e.target;
+  // —— 管理员用户后台操作 ——
+  if (t.id === 'adminRefresh') {
+    toast('正在刷新用户数据…');
+    await loadAdminUsers();
+    return;
+  }
+  const ucard = t.closest('.admin-user-card');
+  if (ucard && t.dataset.aact) {
+    const ukey = ucard.dataset.ukey;
+    const unick = ucard.dataset.unick;
+    if (t.dataset.aact === 'mem') {
+      state.prefs.memoryUser = unick;
+      LS.set('prefs', state.prefs);
+      await loadMemories();
+      settingsTab = 'memory';
+      renderSettings();
+      toast(`🧠 正在查看/管理「${unick}」的长期记忆`);
+      return;
+    }
+    if (t.dataset.aact === 'convs') {
+      toast(`正在读取「${unick}」的云端对话…`);
+      try {
+        const r = await apiJSON(`/api/cloud-convs?user=${encodeURIComponent(unick)}`);
+        const convs = r.convs || [];
+        state.adminInspectHtml = `<b>💬 「${esc(unick)}」的云端对话记录（共 ${convs.length} 个会话）</b>` +
+          (convs.length ? convs.map((c) => `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">
+            <div><b>${esc(c.title || '未命名对话')}</b> <small style="color:var(--ink-3)">(${esc(c.model || '')} · ${fmtTime(c.updatedAt)})</small></div>
+            ${(c.messages || []).slice(-6).map((m) => `<div style="margin:4px 0;color:var(--ink-2)"><b>${m.role === 'user' ? '👤 ' + esc(unick) : '✦ AI'}：</b>${esc((m.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join(' ').slice(0, 220))}</div>`).join('')}
+          </div>`).join('') : '<p class="hint">该用户暂未产生云端备份对话。</p>');
+        renderSettings();
+      } catch (err) { toast('读取失败：' + err.message); }
+      return;
+    }
+    if (t.dataset.aact === 'block') {
+      try {
+        await apiJSON('/api/admin/user-action', { userKey: ukey, action: 'toggleBlock' });
+        await loadAdminUsers();
+        toast(`已更新「${unick}」的状态`);
+      } catch (err) { toast('操作失败：' + err.message); }
+      return;
+    }
+    if (t.dataset.aact === 'del') {
+      if (!confirm(`确定从管理列表移除「${unick}」的统计记录？`)) return;
+      try {
+        await apiJSON('/api/admin/user-action', { userKey: ukey, action: 'deleteUser' });
+        await loadAdminUsers();
+        toast(`已移除「${unick}」`);
+      } catch (err) { toast('删除失败：' + err.message); }
+      return;
+    }
+  }
   // —— 长期记忆操作 ——
   if (t.id === 'memAddBtn') {
     const inp = $('#memNewInput');
@@ -914,14 +1042,14 @@ $('#settingsBody').addEventListener('click', async (e) => {
   if (t.id === 'dCloudPush') {
     try {
       toast('正在同步对话到 Google 云…');
-      const r = await apiJSON('/api/cloud-convs', { user: state.prefs.memoryUser || 'default', convs: await dbAll() });
+      const r = await apiJSON('/api/cloud-convs', { user: state.prefs.memoryUser || state.nickname || 'default', convs: await dbAll() });
       toast(`☁ 已备份 ${r.count} 个对话到 Google 免费云`);
     } catch (err) { toast('云备份失败：' + err.message); }
     return;
   }
   if (t.id === 'dCloudPull') {
     try {
-      const r = await apiJSON(`/api/cloud-convs?user=${encodeURIComponent(state.prefs.memoryUser || 'default')}`);
+      const r = await apiJSON(`/api/cloud-convs?user=${encodeURIComponent(state.prefs.memoryUser || state.nickname || 'default')}`);
       if (!r.convs?.length) return toast('云端暂无该标识下的备份对话');
       for (const c of r.convs) await dbPut(c);
       state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -940,7 +1068,7 @@ $('#settingsBody').addEventListener('click', async (e) => {
   if (t.id === 'pDel') { if (!confirm('删除这个预设？')) return; state.presets = state.presets.filter((p) => p.id !== editingPreset.id); editingPreset = null; savePresets(); renderSettings(); renderPanel(); }
   if (t.dataset.themeSet) { state.prefs.theme = t.dataset.themeSet; LS.set('prefs', state.prefs); applyTheme(); renderSettings(); }
   if (t.dataset.send) { state.prefs.sendKey = t.dataset.send; LS.set('prefs', state.prefs); renderSettings(); }
-  if (t.id === 'logout') { state.token = ''; LS.set('token', ''); location.reload(); }
+  if (t.id === 'logout') { state.token = ''; $('#settingsDialog').close(); showLogin(); }
   if (t.id === 'dExport') {
     const blob = new Blob([JSON.stringify({ app: 'gemini-tiyan', version: 1, convs: await dbAll(), presets: state.presets, memories: state.memories }, null, 0)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `gemini体验-备份-${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -971,7 +1099,9 @@ $('#settingsBody').addEventListener('keydown', (e) => {
   if (e.target.id === 'memUserInput' && e.key === 'Enter') { e.preventDefault(); $('#memSwitchUser')?.click(); }
 });
 $('#openMemory').onclick = () => openSettings('memory');
+$('#openAdmin').onclick = () => openSettings('admin');
 $('#openSettings').onclick = () => openSettings('prompts');
+$('#userBadgeBtn').onclick = () => showLogin();
 
 // ---------------- 主题 / 侧栏 / 快捷键 ----------------
 function applyTheme() {
@@ -990,27 +1120,55 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { $('#modelMenu').classList.remove('open'); $('#lightbox').classList.remove('open'); }
 });
 
-// ---------------- 登录 ----------------
-function showLogin() { if (!$('#loginDialog').open) $('#loginDialog').showModal(); setTimeout(() => $('#loginPwd').focus(), 50); }
+// ---------------- 登录（每次打开网页强制填写昵称 + 密码） ----------------
+function updateUserBadge() {
+  const el = $('#userBadgeText');
+  if (el) el.textContent = state.token && state.nickname ? state.nickname : '未登录';
+}
+function showLogin(errText = '') {
+  $('#loginErr').textContent = errText || '';
+  if (state.nickname && !$('#loginName').value) $('#loginName').value = state.nickname;
+  $('#loginPwd').value = '';
+  if (!$('#loginDialog').open) $('#loginDialog').showModal();
+  setTimeout(() => ($('#loginName').value ? $('#loginPwd') : $('#loginName')).focus(), 50);
+}
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#loginPwd').value }) });
-  const j = await res.json();
+  const nickname = $('#loginName').value.trim();
+  const password = $('#loginPwd').value;
+  if (!nickname) { $('#loginErr').textContent = '请填写你的昵称'; return; }
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nickname, password }),
+  });
+  const j = await res.json().catch(() => ({}));
   if (!res.ok) { $('#loginErr').textContent = j.error || '登录失败'; return; }
-  state.token = j.token; LS.set('token', j.token); $('#loginDialog').close(); loadMemories(); toast('欢迎回来');
+  state.token = j.token;
+  state.nickname = j.nickname;
+  LS.set('lastNickname', j.nickname);
+  state.prefs.memoryUser = j.nickname;
+  LS.set('prefs', state.prefs);
+  updateUserBadge();
+  $('#loginDialog').close();
+  await loadMemories();
+  toast(`🎉 欢迎你，${j.nickname}！已载入你的专属记忆空间`);
+  input.focus();
 });
-$('#loginDialog').addEventListener('cancel', (e) => e.preventDefault());
+$('#loginDialog').addEventListener('cancel', (e) => {
+  if (!state.token) e.preventDefault();
+});
 
 // ---------------- 启动 ----------------
 applyTheme();
+updateUserBadge();
 if (LS.get('panelClosed', innerWidth < 1100)) $('#panel').classList.add('closed');
 try {
   const cfg = await (await fetch('/api/config')).json();
   state.models = cfg.models; state.needPassword = cfg.needPassword; state.project = cfg.project; state.memoryBucket = cfg.memoryBucket || '';
   if (!allModels().some((m) => m.id === state.prefs.defaultModel)) state.prefs.defaultModel = state.models[0]?.id;
-  if (cfg.needPassword && !state.token) showLogin();
 } catch { toast('无法连接服务端'); }
 state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);
-await loadMemories();
 openConv(newDraft(state.prefs.defaultModel));
-input.focus();
+// 每次打开网页强制弹出「昵称 + 密码」登录验证
+showLogin();

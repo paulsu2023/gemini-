@@ -26,7 +26,8 @@
     <nav class="conv-list" id="convList"></nav>
     <div class="sidebar-foot">
       <button class="foot-btn" id="openMemory" title="长期记忆库">🧠 记忆 <span id="memBadge"></span></button>
-      <button class="foot-btn" id="openSettings">⚙ 设置与提示词</button>
+      <button class="foot-btn" id="openAdmin" title="查看管理所有朋友的登录与记忆">🛡 管理</button>
+      <button class="foot-btn" id="openSettings">⚙ 设置</button>
       <button class="foot-btn" id="toggleTheme" title="切换明暗">◐</button>
     </div>
   </aside>
@@ -45,6 +46,7 @@
         <div class="model-menu" id="modelMenu"></div>
       </div>
       <div class="conv-title" id="convTitle"></div>
+      <button class="user-pill" id="userBadgeBtn" title="当前登录身份（点击可切换昵称或重新登录）">👤 <span id="userBadgeText">未登录</span></button>
       <button class="icon-btn" id="togglePanel" title="运行设置">⚙</button>
     </header>
 
@@ -84,6 +86,7 @@
       <h2>设置</h2>
       <div class="tabs" id="settingsTabs">
         <button type="button" data-tab="memory">🧠 长期记忆</button>
+        <button type="button" data-tab="admin">🛡 用户管理</button>
         <button type="button" data-tab="prompts" class="active">前置提示词库</button>
         <button type="button" data-tab="general">通用</button>
         <button type="button" data-tab="data">数据与云同步</button>
@@ -95,15 +98,16 @@
   </form>
 </dialog>
 
-<!-- 登录弹窗 -->
+<!-- 登录弹窗（每次打开需填写昵称 + 访问密码） -->
 <dialog id="loginDialog" class="dialog small">
   <form class="dialog-inner login" id="loginForm">
     <svg class="brand-mark big" viewBox="0 0 64 64"><path d="M32 4c2 15 13 26 28 28-15 2-26 13-28 28-2-15-13-26-28-28C19 30 30 19 32 4z"/></svg>
     <h2>Gemini 体验</h2>
-    <p>这个站点开启了访问密码</p>
-    <input type="password" id="loginPwd" placeholder="请输入访问密码" autocomplete="current-password" />
+    <p>请输入你的昵称与访问密码登录<br/><small style="opacity:.75">每个昵称拥有独立的长期记忆与云端对话空间</small></p>
+    <input type="text" id="loginName" placeholder="你的昵称（如：小明、阿杰）" maxlength="32" autocomplete="nickname" required />
+    <input type="password" id="loginPwd" placeholder="请输入访问密码" autocomplete="off" required />
     <div class="login-err" id="loginErr"></div>
-    <button class="btn primary" type="submit">进入</button>
+    <button class="btn primary" type="submit">登录进入</button>
   </form>
 </dialog>
 
