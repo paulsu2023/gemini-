@@ -12,3 +12,6 @@ data/
 !.env.example
 service-account*.json
 *-credentials.json
+
+.vercel
+.env*

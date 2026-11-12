@@ -1,14 +1,19 @@
 {
-  "version": 2,
-  "functions": {
-    "server.js": {
-      "maxDuration": 60
+  "services": {
+    "gemini-tiyan": {
+      "framework": "express",
+      "entrypoint": "server.js",
+      "root": ".",
+      "buildCommand": "npm install"
     }
   },
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/server.js"
+      "destination": {
+        "type": "service",
+        "service": "gemini-tiyan"
+      }
     }
   ]
 }
