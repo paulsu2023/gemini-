@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: gemini-tiyan
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: ACCESS_PASSWORD
+        sync: false

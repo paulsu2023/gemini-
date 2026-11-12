@@ -1,0 +1,13 @@
+# 依赖与运行产物
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# ⚠️ 密钥绝不入库
+credentials/
+*.json.key
+.env
+.env.*
+!.env.example
+service-account*.json
+*-credentials.json

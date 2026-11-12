@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Gemini 体验</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path d='M32 4c2 15 13 26 28 28-15 2-26 13-28 28-2-15-13-26-28-28C19 30 30 19 32 4z' fill='%23c8442d'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
+  <link rel="stylesheet" href="/vendor/hljs/styles/github.min.css" id="hljs-light" />
+  <link rel="stylesheet" href="/vendor/hljs/styles/github-dark.min.css" id="hljs-dark" disabled />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app" id="app">
+  <!-- ========== 左侧：会话列表 ========== -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 64 64"><path d="M32 4c2 15 13 26 28 28-15 2-26 13-28 28-2-15-13-26-28-28C19 30 30 19 32 4z"/></svg>
+      <div class="brand-text"><b>Gemini</b><span>体验</span></div>
+      <button class="icon-btn only-mobile" id="closeSidebar" title="收起">✕</button>
+    </div>
+    <button class="new-chat" id="newChat"><span>＋</span> 新建对话 <kbd>Ctrl K</kbd></button>
+    <div class="search"><input id="searchConv" placeholder="搜索对话…" /></div>
+    <nav class="conv-list" id="convList"></nav>
+    <div class="sidebar-foot">
+      <button class="foot-btn" id="openSettings">⚙ 设置与提示词库</button>
+      <button class="foot-btn" id="toggleTheme" title="切换明暗">◐</button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ========== 中间：对话区 ========== -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="openSidebar" title="会话">☰</button>
+      <div class="model-picker" id="modelPicker">
+        <button class="model-btn" id="modelBtn">
+          <span class="kind-dot" id="modelKindDot"></span>
+          <span id="modelName">选择模型</span>
+          <span class="caret">▾</span>
+        </button>
+        <div class="model-menu" id="modelMenu"></div>
+      </div>
+      <div class="conv-title" id="convTitle"></div>
+      <button class="icon-btn" id="togglePanel" title="运行设置">⚙</button>
+    </header>
+
+    <section class="messages" id="messages">
+      <div class="welcome" id="welcome"></div>
+      <div class="thread" id="thread"></div>
+    </section>
+
+    <footer class="composer-wrap">
+      <div class="composer" id="composer">
+        <div class="attachments" id="attachments"></div>
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
+        <div class="composer-bar">
+          <button class="icon-btn" id="attachBtn" title="上传图片 / PDF / 音频 / 视频 / 文本">📎</button>
+          <input type="file" id="fileInput" multiple hidden />
+          <div class="chips" id="quickChips"></div>
+          <div class="spacer"></div>
+          <span class="hint" id="composerHint"></span>
+          <button class="send" id="sendBtn" title="发送">↑</button>
+        </div>
+      </div>
+      <div class="disclaimer">内容由 Vertex AI 生成，可能有误；所有调用会计入 Google Cloud 账单。</div>
+    </footer>
+  </main>
+
+  <!-- ========== 右侧：运行设置（AI Studio 风格） ========== -->
+  <aside class="panel" id="panel">
+    <div class="panel-head"><h3>运行设置</h3><button class="icon-btn" id="closePanel">✕</button></div>
+    <div class="panel-body" id="panelBody"></div>
+  </aside>
+</div>
+
+<!-- 设置弹窗 -->
+<dialog id="settingsDialog" class="dialog">
+  <form method="dialog" class="dialog-inner">
+    <header class="dialog-head">
+      <h2>设置</h2>
+      <div class="tabs" id="settingsTabs">
+        <button type="button" data-tab="prompts" class="active">前置提示词库</button>
+        <button type="button" data-tab="general">通用</button>
+        <button type="button" data-tab="data">数据</button>
+        <button type="button" data-tab="about">关于</button>
+      </div>
+      <button class="icon-btn" value="close">✕</button>
+    </header>
+    <div class="dialog-body" id="settingsBody"></div>
+  </form>
+</dialog>
+
+<!-- 登录弹窗 -->
+<dialog id="loginDialog" class="dialog small">
+  <form class="dialog-inner login" id="loginForm">
+    <svg class="brand-mark big" viewBox="0 0 64 64"><path d="M32 4c2 15 13 26 28 28-15 2-26 13-28 28-2-15-13-26-28-28C19 30 30 19 32 4z"/></svg>
+    <h2>Gemini 体验</h2>
+    <p>这个站点开启了访问密码</p>
+    <input type="password" id="loginPwd" placeholder="请输入访问密码" autocomplete="current-password" />
+    <div class="login-err" id="loginErr"></div>
+    <button class="btn primary" type="submit">进入</button>
+  </form>
+</dialog>
+
+<!-- 图片预览 -->
+<div class="lightbox" id="lightbox"><img id="lightboxImg" alt="" /></div>
+<div class="toast" id="toast"></div>
+
+<script src="/vendor/marked/marked.umd.js"></script>
+<script src="/vendor/dompurify/purify.min.js"></script>
+<script src="/vendor/hljs/highlight.min.js"></script>
+<script src="/vendor/katex/katex.min.js"></script>
+<script src="/vendor/katex/contrib/auto-render.min.js"></script>
+<script src="/app.js" type="module"></script>
+</body>
+</html>
