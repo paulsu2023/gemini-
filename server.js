@@ -147,7 +147,22 @@ function parseUserToken(token = '') {
   return { ok: false };
 }
 
+// 判断是否为本机 localhost / 127.0.0.1 直接访问（本机主人自用免登录、免密码、免视频密码；线上 Vercel / Cloudflare 隧道等公网访问强制要求登录与视频密码）
+function isLocalDirectRequest(req) {
+  if (process.env.VERCEL || process.env.REQUIRE_VIDEO_PASSWORD === '1') return false;
+  if (req.get('cf-ray') || req.get('cf-connecting-ip') || req.get('x-forwarded-for')) return false;
+  const host = (req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+  const origin = (req.get('origin') || req.get('referer') || '').toLowerCase();
+  if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(origin)) return false;
+  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
+}
+
 function auth(req, res, next) {
+  if (isLocalDirectRequest(req)) {
+    const headerNick = req.get('x-user-nickname') ? decodeURIComponent(req.get('x-user-nickname')) : '';
+    req.userNickname = (headerNick || 'default').trim();
+    return next();
+  }
   const t = req.get('x-access-token') || req.query.token || '';
   const parsed = parseUserToken(t);
   if (!parsed.ok) return res.status(401).json({ error: '请先输入昵称与访问密码登录' });
@@ -168,25 +183,16 @@ app.use('/vendor/dompurify', express.static(nm('dompurify/dist')));
 app.use('/vendor/hljs', express.static(nm('@highlightjs/cdn-assets')));
 app.use('/vendor/katex', express.static(nm('katex/dist')));
 
-// 判断是否为本机 localhost / 127.0.0.1 直接访问（本机直连无需视频密码；线上 Vercel / Cloudflare 隧道等外网访问强制要求视频密码 hhrhl）
-function isLocalDirectRequest(req) {
-  if (process.env.VERCEL || process.env.REQUIRE_VIDEO_PASSWORD === '1') return false;
-  if (req.get('cf-ray') || req.get('cf-connecting-ip') || req.get('x-forwarded-for')) return false;
-  const host = (req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
-  const origin = (req.get('origin') || req.get('referer') || '').toLowerCase();
-  if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(origin)) return false;
-  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
-}
-
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.get('/api/config', (req, res) => {
+  const isLocal = isLocalDirectRequest(req);
   res.json({
-    needPassword: !!ACCESS_PASSWORD,
-    requireNickname: true,
-    needVideoPassword: !isLocalDirectRequest(req),
+    needPassword: !isLocal && !!ACCESS_PASSWORD,
+    requireNickname: !isLocal,
+    needVideoPassword: !isLocal,
     project: PROJECT,
     memoryBucket: MEMORY_BUCKET,
     models: MODELS,

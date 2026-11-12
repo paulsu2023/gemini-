@@ -1132,12 +1132,19 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { $('#modelMenu').classList.remove('open'); $('#lightbox').classList.remove('open'); }
 });
 
-// ---------------- 登录（每次打开网页强制填写昵称 + 密码） ----------------
+// ---------------- 登录（线上环境每次打开网页强制填写昵称 + 密码；本机 localhost 免登录直接用） ----------------
 function updateUserBadge() {
+  const btn = $('#userBadgeBtn');
   const el = $('#userBadgeText');
+  if (!state.needPassword) {
+    if (btn) btn.style.display = 'none';
+    return;
+  }
+  if (btn) btn.style.display = '';
   if (el) el.textContent = state.token && state.nickname ? state.nickname : '未登录';
 }
 function showLogin(errText = '') {
+  if (!state.needPassword) return;
   $('#loginErr').textContent = errText || '';
   if (state.nickname && !$('#loginName').value) $('#loginName').value = state.nickname;
   $('#loginPwd').value = '';
@@ -1171,20 +1178,29 @@ $('#loginForm').addEventListener('submit', async (e) => {
   input.focus();
 });
 $('#loginDialog').addEventListener('cancel', (e) => {
-  if (!state.token) e.preventDefault();
+  if (state.needPassword && !state.token) e.preventDefault();
 });
 
 // ---------------- 启动 ----------------
 applyTheme();
-updateUserBadge();
 if (LS.get('panelClosed', innerWidth < 1100)) $('#panel').classList.add('closed');
 try {
   const cfg = await (await fetch('/api/config')).json();
-  state.models = cfg.models; state.needPassword = cfg.needPassword; state.project = cfg.project; state.memoryBucket = cfg.memoryBucket || '';
+  state.models = cfg.models; state.needPassword = !!cfg.needPassword; state.project = cfg.project; state.memoryBucket = cfg.memoryBucket || '';
   if (cfg.needVideoPassword !== undefined) state.needVideoPassword = !!cfg.needVideoPassword;
   if (!allModels().some((m) => m.id === state.prefs.defaultModel)) state.prefs.defaultModel = state.models[0]?.id;
 } catch { toast('无法连接服务端'); }
+updateUserBadge();
 state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);
 openConv(newDraft(state.prefs.defaultModel));
-// 每次打开网页强制弹出「昵称 + 密码」登录验证
-showLogin();
+if (state.needPassword) {
+  // 线上环境每次打开网页强制弹出「昵称 + 密码」登录验证
+  showLogin();
+} else {
+  // 本机 localhost 直接免密使用
+  await loadMemories();
+  if (location.pathname === '/admin' || location.hash === '#admin' || new URLSearchParams(location.search).get('admin') === '1') {
+    openSettings('admin');
+  }
+  input.focus();
+}
