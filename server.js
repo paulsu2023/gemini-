@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
@@ -152,8 +153,13 @@ const errMsg = (e) => {
 };
 
 // ---------- 长期记忆与云端同步（本地 data/ 目录 + Google Cloud Storage US-CENTRAL1 永久免费层） ----------
-const LOCAL_MEM_DIR = path.join(__dirname, 'data', 'memories');
-fs.mkdirSync(LOCAL_MEM_DIR, { recursive: true });
+let LOCAL_MEM_DIR = path.join(__dirname, 'data', 'memories');
+try {
+  fs.mkdirSync(LOCAL_MEM_DIR, { recursive: true });
+} catch {
+  LOCAL_MEM_DIR = path.join(os.tmpdir(), 'gemini-tiyan-memories');
+  try { fs.mkdirSync(LOCAL_MEM_DIR, { recursive: true }); } catch {}
+}
 
 function safeUserKey(raw = 'default') {
   const s = String(raw || 'default').trim().toLowerCase().slice(0, 64);
@@ -573,6 +579,10 @@ app.get('/api/discover', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: errMsg(e) }); }
 });
 
-app.listen(PORT, () => {
-  console.log(`✨ Gemini 体验已启动：http://localhost:${PORT}  （项目 ${PROJECT}${ACCESS_PASSWORD ? '，已开启访问密码' : ''}）`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`✨ Gemini 体验已启动：http://localhost:${PORT}  （项目 ${PROJECT}${ACCESS_PASSWORD ? '，已开启访问密码' : ''}）`);
+  });
+}
+
+export default app;

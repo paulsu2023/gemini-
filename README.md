@@ -35,15 +35,24 @@ npm install
 npm start
 ```
 
-Windows 下也可以直接双击 **`启动.bat`**，会自动打开 `http://localhost:3000`。
+Windows 下也可以：
+- 双击 **`启动.bat`**：在本地打开 `http://localhost:3000`。
+- 双击 **`启动并生成外网分享链接.bat`**：一键启动本地服务并建立 **Cloudflare 全球边缘隧道 (`*.trycloudflare.com`)**，**中国大陆的朋友无需翻墙/VPN 即可直接打开体验**。
 
 ---
 
-## 线上部署（给朋友用）
+## 线上部署（让中国大陆的朋友免翻墙直接体验）
 
-仓库已包含 `Dockerfile` 与 `render.yaml`，可一键部署到 **Cloud Run / Render / Railway / Zeabur / Fly.io** 等任意支持 Node.js 或 Docker 的平台。
+由于后端需要直接调用海外的 Google Vertex AI 接口 (`aiplatform.googleapis.com`)，而国内朋友需要**不挂梯子直接打开网页**，推荐以下 **3 种对中国大陆最友好的部署方案**：
 
-部署时只需在平台后台配置 **2 个环境变量**（无需上传密钥文件）：
+1. **方案一：本机一键 Cloudflare 边缘隧道分享（最快、0 成本、国内免翻墙直连）**
+   - 直接双击项目目录下的 **`启动并生成外网分享链接.bat`**，终端会自动吐出一个 `https://xxxx.trycloudflare.com` 网址，发给国内朋友即可直接打开。
+2. **方案二：Zeabur / Render / Railway 云端 24 小时托管（关掉电脑也能用）**
+   - 在 [Zeabur](https://zeabur.com)（亚太香港/东京节点对国内最友好）或 [Render](https://render.com) 绑定本 GitHub 仓库 `paulsu2023/gemini-`，自动识别 `Dockerfile` 或 `render.yaml` 部署。
+3. **方案三：Vercel / Google Cloud Run + 自定义域名（绑定 Cloudflare CDN）**
+   - 仓库已内置 `vercel.json` 与 `Dockerfile`，支持一键部署到 Vercel 或 Cloud Run；若绑定一个托管在 Cloudflare DNS 下的自定义域名（开启小黄云），全国三网均可毫秒级免翻墙直连。
+
+部署到云平台时只需在后台配置 **2 个环境变量**（无需上传密钥文件）：
 
 | 环境变量 | 必填 | 说明 |
 | :--- | :---: | :--- |
