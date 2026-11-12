@@ -325,6 +325,21 @@ audio { width: 100%; max-width: 480px; margin: 6px 0; }
 .about p { color: var(--ink-2); }
 .about code { font-family: var(--mono); background: var(--paper-2); padding: 1px 6px; border-radius: 5px; }
 
+/* 记忆列表样式 */
+.mem-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); margin-bottom: 12px; font-size: 13px; }
+.mem-bar input { padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 150px; }
+.mem-status { font-size: 12px; color: var(--chat); margin-left: auto; }
+.mem-add { display: flex; gap: 8px; margin: 10px 0 12px; }
+.mem-add input { flex: 1; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); outline: none; }
+.mem-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.mem-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 13.5px; }
+.mem-item.off { opacity: .5; }
+.mem-item .txt { flex: 1; word-break: break-word; }
+.mem-item .ops { display: flex; gap: 4px; }
+.mem-item .ops button { border: 0; background: none; color: var(--ink-3); font-size: 12.5px; padding: 2px 6px; border-radius: 6px; }
+.mem-item .ops button:hover { background: var(--line); color: var(--accent); }
+#memBadge { font-family: var(--mono); font-size: 11px; background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 999px; }
+
 .lightbox { position: fixed; inset: 0; z-index: 100; background: rgba(10, 8, 5, .85); display: none; place-items: center; cursor: zoom-out; padding: 3vh; }
 .lightbox.open { display: grid; }
 .lightbox img { max-width: 100%; max-height: 94vh; border-radius: 10px; }

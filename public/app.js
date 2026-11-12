@@ -61,13 +61,91 @@ const dbDel = (id) => idb('readwrite', (s) => s.delete(id));
 // ---------------- 状态 ----------------
 const state = {
   models: [], custom: LS.get('customModels', []), convs: [], conv: null,
-  prefs: LS.get('prefs', { defaultModel: 'gemini-3.8-flash', defaultPreset: 'none', theme: 'light', sendKey: 'enter' }),
+  prefs: {
+    defaultModel: 'gemini-3.8-flash', defaultPreset: 'none', theme: 'light', sendKey: 'enter',
+    memoryUser: 'default', memoryEnabled: true, memoryAutoExtract: true, memoryCloudSync: true,
+    ...LS.get('prefs', {}),
+  },
   defaults: { ...DEFAULT_SETTINGS, ...LS.get('defaults', {}) },
   presets: LS.get('presets', null) || DEFAULT_PRESETS,
+  memories: [], memoryBucket: '', memoryCloudOk: false,
   token: LS.get('token', ''), busy: false, abort: null, attachments: [], needPassword: false,
 };
 const allModels = () => [...state.models, ...state.custom];
 const modelInfo = (id) => allModels().find((m) => m.id === id) || { id, name: id, kind: 'chat', location: 'global' };
+
+// ---------------- 长期记忆（本地 + Google Cloud 免费云存储双模同步） ----------------
+const memKey = () => 'memories.' + (state.prefs.memoryUser || 'default').trim().toLowerCase();
+function updateMemBadge() {
+  const active = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false).length : 0;
+  const el = $('#memBadge');
+  if (el) el.textContent = active ? `${active}` : '';
+}
+async function loadMemories() {
+  const user = (state.prefs.memoryUser || 'default').trim() || 'default';
+  const localList = LS.get(memKey(), []);
+  state.memories = Array.isArray(localList) ? localList : [];
+  updateMemBadge();
+  try {
+    const cloud = state.prefs.memoryCloudSync !== false ? '1' : '0';
+    const r = await apiJSON(`/api/memory?user=${encodeURIComponent(user)}&cloud=${cloud}`);
+    state.memoryBucket = r.bucket || state.memoryBucket;
+    state.memoryCloudOk = !!r.cloudOk;
+    if (Array.isArray(r.memories) && (r.memories.length || !state.memories.length)) {
+      state.memories = r.memories;
+      LS.set(memKey(), state.memories);
+    }
+    updateMemBadge(); renderComposer();
+  } catch {}
+}
+async function saveMemories(tip) {
+  const user = (state.prefs.memoryUser || 'default').trim() || 'default';
+  LS.set(memKey(), state.memories);
+  updateMemBadge(); renderComposer();
+  try {
+    const r = await apiJSON('/api/memory', {
+      user, memories: state.memories, syncCloud: state.prefs.memoryCloudSync !== false,
+    });
+    state.memoryCloudOk = !!r.cloudOk;
+    if (tip) toast(r.cloudOk ? `${tip}（已同步本地与 Google 云）` : `${tip}（已存本地）`);
+  } catch {
+    if (tip) toast(`${tip}（已存浏览器本地）`);
+  }
+}
+function addMemoryItem(content, tip = '🧠 已记入长期记忆') {
+  const txt = String(content || '').trim();
+  if (!txt) return false;
+  if (state.memories.some((m) => m.content === txt)) return false;
+  state.memories.unshift({ id: uid(), content: txt, enabled: true, createdAt: Date.now() });
+  saveMemories(tip);
+  return true;
+}
+function composeSystemInstruction(base = '') {
+  const active = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false) : [];
+  if (!active.length) return base;
+  const memBlock = `[关于用户的长期记忆（请在回答时自然贴合这些背景与偏好，无需生硬复述）]\n` +
+    active.map((m, i) => `${i + 1}. ${m.content}`).join('\n');
+  return base?.trim() ? `${ base.trim() }\n\n${memBlock}` : memBlock;
+}
+async function autoExtractMemories(conv) {
+  if (state.prefs.memoryEnabled === false || state.prefs.memoryAutoExtract === false) return;
+  const recent = conv.messages.slice(-4).map((m) => ({
+    role: m.role,
+    text: (m.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join('\n').trim(),
+  })).filter((m) => m.text);
+  const lastUser = [...recent].reverse().find((m) => m.role === 'user')?.text || '';
+  // 当用户消息提到偏好/身份口令或长度足够时触发轻量提炼
+  if (lastUser.length < 6 && !/记住|我是|我叫|我喜欢|我偏好|以后|默认|习惯/.test(lastUser)) return;
+  try {
+    const r = await apiJSON('/api/memory/extract', { messages: recent, existing: state.memories });
+    const added = (r.added || []).filter((txt) => !state.memories.some((m) => m.content === txt));
+    if (added.length) {
+      for (const txt of added) state.memories.unshift({ id: uid(), content: txt, enabled: true, createdAt: Date.now() });
+      await saveMemories();
+      toast(`🧠 已自动记住：${added[0].slice(0, 24)}${added.length > 1 ? ` 等 ${added.length} 条` : ''}`);
+    }
+  } catch {}
+}
 
 // ---------------- API ----------------
 async function api(path, opts = {}) {
@@ -297,7 +375,7 @@ function fillMsg(el, m) {
       ${files.length ? `<div class="user-files">${files.map((p) => p.inlineData.mimeType.startsWith('image/')
         ? `<img src="${dataURL(p.inlineData)}" alt="" data-zoom>` : `<span class="file-chip">${fileIcon(p.inlineData.mimeType)} ${esc(p.fileName || p.inlineData.mimeType)}</span>`).join('')}</div>` : ''}
       ${text ? `<div class="bubble">${esc(text)}</div>` : ''}
-      <div class="msg-actions"><button data-act="copy">复制</button><button data-act="edit">编辑</button><button data-act="delete">删除</button></div></div>`;
+      <div class="msg-actions"><button data-act="copy">复制</button><button data-act="remember" title="存入长期记忆">🧠 记住</button><button data-act="edit">编辑</button><button data-act="delete">删除</button></div></div>`;
     return;
   }
   el.classList.toggle('loading', !!m.meta?.loading);
@@ -349,7 +427,7 @@ function fillMsg(el, m) {
   el.innerHTML = `<div class="avatar">${STAR}</div><div class="body">
     <div class="msg-meta"><span>${esc(info.name)}</span>${meta.usage ? `<span class="usage">${fmtUsage(meta.usage)}</span>` : ''}${meta.seconds ? `<span class="usage">${meta.seconds}s</span>` : ''}</div>
     ${body}
-    ${meta.loading ? '' : `<div class="msg-actions"><button data-act="copy">复制</button><button data-act="regen">重新生成</button><button data-act="delete">删除</button></div>`}</div>`;
+    ${meta.loading ? '' : `<div class="msg-actions"><button data-act="copy">复制</button><button data-act="remember" title="存入长期记忆">🧠 记住</button><button data-act="regen">重新生成</button><button data-act="delete">删除</button></div>`}</div>`;
   if (meta.loading) { const last = $$('.md', el).pop(); if (last && main.some((p) => p.text)) last.classList.add('cursor'); }
   enhanceCode(el);
 }
@@ -380,6 +458,12 @@ $('#thread').addEventListener('click', async (e) => {
   }
   const act = e.target.closest('[data-act]')?.dataset.act; if (!act || state.busy) return;
   if (act === 'copy') copyText(m.parts.filter((p) => p.text && !p.thought).map((p) => p.text).join('\n'));
+  if (act === 'remember') {
+    const raw = m.parts.filter((p) => p.text && !p.thought).map((p) => p.text).join(' ').replace(/\s+/g, ' ').trim();
+    const val = prompt('编辑要存入长期记忆的内容：', raw.slice(0, 160));
+    if (val?.trim()) addMemoryItem(val.trim());
+    return;
+  }
   if (act === 'delete') { conv.messages.splice(i, 1); msgEl.remove(); conv.messages.length ? saveConv() : (await dbDel(conv.id), state.convs = state.convs.filter((c) => c.id !== conv.id), renderAll()); }
   if (act === 'regen') {
     conv.messages.splice(i);
@@ -423,7 +507,11 @@ function renderComposer() {
   if (kind === 'video') html += `<button class="chip" data-open-panel>${s.vAspect} · ${s.vDuration}秒 · ${s.vResolution}</button>`;
   if (kind === 'tts') html += `<button class="chip" data-open-panel>音色 ${s.voice}</button>`;
   $('#quickChips').innerHTML = html;
-  $('#composerHint').textContent = state.conv.systemInstruction && (kind === 'chat' || kind === 'image') ? '✓ 已设前置提示词' : '';
+  const memCount = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false).length : 0;
+  const hints = [];
+  if (state.conv.systemInstruction && (kind === 'chat' || kind === 'image')) hints.push('✓ 前置提示词');
+  if (memCount && (kind === 'chat' || kind === 'image')) hints.push(`🧠 记忆 ${memCount} 条`);
+  $('#composerHint').textContent = hints.join(' · ');
   $('#sendBtn').classList.toggle('stop', state.busy);
   $('#sendBtn').textContent = state.busy ? '' : '↑';
 }
@@ -533,7 +621,10 @@ async function runModel() {
   msg.meta.seconds = ((Date.now() - t0) / 1000).toFixed(1);
   state.busy = false; state.abort = null;
   updateMsg(msg); renderComposer();
-  if (conv.messages.includes(msg)) await saveConv(conv);
+  if (conv.messages.includes(msg)) {
+    await saveConv(conv);
+    if (info.kind === 'chat' && !msg.meta.error) autoExtractMemories(conv);
+  }
 }
 
 async function runStream(conv, info, history, msg) {
@@ -542,7 +633,7 @@ async function runStream(conv, info, history, msg) {
   if (info.kind === 'image') Object.assign(settings, { includeThoughts: s.includeThoughts, thinkingLevel: 'auto', codeExecution: false, urlContext: false, jsonMode: false });
   const res = await api('/api/chat', {
     method: 'POST', signal: state.abort.signal,
-    body: JSON.stringify({ model: conv.model, location: info.location, kind: info.kind, contents: buildContents(history), systemInstruction: conv.systemInstruction, settings }),
+    body: JSON.stringify({ model: conv.model, location: info.location, kind: info.kind, contents: buildContents(history), systemInstruction: composeSystemInstruction(conv.systemInstruction), settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `请求失败 (${res.status})`);
   const reader = res.body.getReader();
@@ -718,7 +809,30 @@ function openSettings(tab = 'prompts') { settingsTab = tab; renderSettings(); $(
 function renderSettings() {
   $$('#settingsTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === settingsTab));
   const body = $('#settingsBody');
-  if (settingsTab === 'prompts') {
+  if (settingsTab === 'memory') {
+    const user = state.prefs.memoryUser || 'default';
+    body.innerHTML = `<div class="mem-bar">
+      <span>👤 记忆空间标识：</span>
+      <input id="memUserInput" value="${esc(user)}" placeholder="如 paul 或朋友昵称" title="不同标识的记忆彼此独立，线上和朋友共用网址也不会串记忆">
+      <button type="button" class="btn" id="memSwitchUser">切换/拉取</button>
+      <button type="button" class="btn" id="memExtractNow">✨ 从当前对话提炼</button>
+      <span class="mem-status">${state.memoryCloudOk ? `☁ Google 免费云已连接 (${esc(state.memoryBucket)})` : '💾 本地存储已就绪'}</span>
+    </div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:8px">
+      <label class="toggle" style="gap:10px;padding:2px 0"><span>对话时自动注入记忆</span><label class="switch"><input type="checkbox" id="memEnableChk" ${state.prefs.memoryEnabled !== false ? 'checked' : ''}><span></span></label></label>
+      <label class="toggle" style="gap:10px;padding:2px 0"><span>聊天时自动学习新记忆</span><label class="switch"><input type="checkbox" id="memAutoChk" ${state.prefs.memoryAutoExtract !== false ? 'checked' : ''}><span></span></label></label>
+      <label class="toggle" style="gap:10px;padding:2px 0"><span>自动同步到 Google 免费云</span><label class="switch"><input type="checkbox" id="memCloudChk" ${state.prefs.memoryCloudSync !== false ? 'checked' : ''}><span></span></label></label>
+    </div>
+    <div class="mem-add">
+      <input id="memNewInput" placeholder="手动添加一条长期记忆，例如：我是做跨境电商的，回答请直接给可落地方案…">
+      <button type="button" class="btn primary" id="memAddBtn">＋ 添加记忆</button>
+    </div>
+    <div class="mem-list">${state.memories.length ? state.memories.map((m) => `<div class="mem-item ${m.enabled === false ? 'off' : ''}" data-mid="${m.id}">
+      <input type="checkbox" data-mact="toggle" ${m.enabled !== false ? 'checked' : ''} title="启用/暂停此条记忆">
+      <span class="txt">${esc(m.content)}</span>
+      <span class="ops"><button type="button" data-mact="edit">编辑</button><button type="button" data-mact="del">删除</button></span>
+    </div>`).join('') : '<p class="hint">还没有长期记忆。你可以在上面手动添加，或者在聊天里直接说“记住我喜欢……”，AI 会自动帮你记住。</p>'}</div>`;
+  } else if (settingsTab === 'prompts') {
     editingPreset = editingPreset && state.presets.find((p) => p.id === editingPreset.id) || state.presets[1] || state.presets[0];
     body.innerHTML = `<div class="preset-layout"><div class="preset-list">
       ${state.presets.map((p) => `<button type="button" class="p ${p.id === editingPreset?.id ? 'active' : ''}" data-pid="${p.id}">${p.id === state.prefs.defaultPreset ? '★ ' : ''}${esc(p.name)}</button>`).join('')}
@@ -733,14 +847,17 @@ function renderSettings() {
       <div class="field"><label>发送快捷键</label><div class="seg"><button type="button" data-send="enter" class="${state.prefs.sendKey !== 'ctrl' ? 'on' : ''}">Enter 发送</button><button type="button" data-send="ctrl" class="${state.prefs.sendKey === 'ctrl' ? 'on' : ''}">Ctrl + Enter 发送</button></div></div>
       ${state.needPassword ? `<div class="field"><button type="button" class="btn" id="logout">退出登录（清除访问密码）</button></div>` : ''}`;
   } else if (settingsTab === 'data') {
-    body.innerHTML = `<p>所有对话、生成的图片与视频都只保存在<b>当前浏览器</b>（IndexedDB）里，服务器不留存。</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="dExport">导出全部对话（JSON）</button>
+    body.innerHTML = `<p><b>本地存储</b>：所有对话、生成的图片与视频默认保存在当前浏览器（IndexedDB），长期记忆同时保存在本地 <code>data/memories/</code>。</p>
+      <p><b>Google 免费云同步</b>：直接复用你的 Vertex 服务账号，存储在 Google Cloud Storage <code>US-CENTRAL1</code> 永久免费层（<code>${esc(state.memoryBucket || '')}</code>，无需额外配置），按「记忆空间标识（当前：<code>${esc(state.prefs.memoryUser || 'default')}</code>）」隔离。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0"><button type="button" class="btn primary" id="dCloudPush">☁ 备份对话到 Google 云</button>
+      <button type="button" class="btn" id="dCloudPull">☁ 从 Google 云恢复对话</button>
+      <button type="button" class="btn" id="dExport">导出全部对话（JSON）</button>
       <button type="button" class="btn" id="dImport">导入对话</button><input type="file" id="dImportFile" accept=".json" hidden>
       <button type="button" class="btn danger" id="dClear">清空全部对话</button></div><p class="hint" id="dStat"></p>`;
     navigator.storage?.estimate?.().then((e) => { const el = $('#dStat'); if (el) el.textContent = `共 ${state.convs.length} 个对话，浏览器已用存储约 ${(e.usage / 1048576).toFixed(1)} MB`; });
   } else {
-    body.innerHTML = `<div class="about"><p><b>Gemini 体验</b> 是一个基于 Google Vertex AI 的中文多模态工作台：对话、画图、视频、语音一站式体验。</p>
-      <p>当前 Google Cloud 项目：<code>${esc(state.project || '')}</code></p>
+    body.innerHTML = `<div class="about"><p><b>Gemini 体验</b> 是一个基于 Google Vertex AI 的中文多模态工作台：对话、画图、视频、语音、长期记忆一站式体验。</p>
+      <p>当前 Google Cloud 项目：<code>${esc(state.project || '')}</code> · 免费云记忆桶：<code>${esc(state.memoryBucket || '')}</code></p>
       <p>凭据只存在服务端，浏览器不会接触到密钥；部署给朋友使用时，建议设置环境变量 <code>ACCESS_PASSWORD</code> 开启访问密码。</p>
       <p>模型列表在服务端 <code>models.js</code> 中维护；也可以在顶部模型菜单底部添加任意 Vertex 模型 ID 尝鲜。</p></div>`;
   }
@@ -748,6 +865,71 @@ function renderSettings() {
 $('#settingsTabs').addEventListener('click', (e) => { const t = e.target.closest('[data-tab]'); if (t) { settingsTab = t.dataset.tab; renderSettings(); } });
 $('#settingsBody').addEventListener('click', async (e) => {
   const t = e.target;
+  // —— 长期记忆操作 ——
+  if (t.id === 'memAddBtn') {
+    const inp = $('#memNewInput');
+    if (addMemoryItem(inp.value)) { inp.value = ''; renderSettings(); }
+    return;
+  }
+  if (t.id === 'memSwitchUser') {
+    state.prefs.memoryUser = ($('#memUserInput').value || 'default').trim() || 'default';
+    LS.set('prefs', state.prefs);
+    await loadMemories();
+    renderSettings();
+    toast(`已切换到记忆空间：${state.prefs.memoryUser}`);
+    return;
+  }
+  if (t.id === 'memExtractNow') {
+    if (!state.conv?.messages?.length) return toast('当前对话还是空的');
+    toast('正在从当前对话提炼记忆…');
+    const msgs = state.conv.messages.map((m) => ({
+      role: m.role,
+      text: (m.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join('\n').trim(),
+    })).filter((m) => m.text);
+    try {
+      const r = await apiJSON('/api/memory/extract', { messages: msgs, existing: state.memories });
+      const added = (r.added || []).filter((txt) => !state.memories.some((m) => m.content === txt));
+      if (!added.length) return toast('未发现需要新增的长期记忆');
+      for (const txt of added) state.memories.unshift({ id: uid(), content: txt, enabled: true, createdAt: Date.now() });
+      await saveMemories(`✨ 已提炼 ${added.length} 条新记忆`);
+      renderSettings();
+    } catch (err) { toast('提炼失败：' + err.message); }
+    return;
+  }
+  const mitem = t.closest('.mem-item');
+  if (mitem && t.dataset.mact) {
+    const m = state.memories.find((x) => x.id === mitem.dataset.mid);
+    if (!m) return;
+    if (t.dataset.mact === 'toggle') { m.enabled = t.checked; await saveMemories(); renderSettings(); }
+    if (t.dataset.mact === 'edit') {
+      const v = prompt('修改记忆内容：', m.content);
+      if (v?.trim()) { m.content = v.trim(); await saveMemories('已更新记忆'); renderSettings(); }
+    }
+    if (t.dataset.mact === 'del') {
+      state.memories = state.memories.filter((x) => x.id !== m.id);
+      await saveMemories('已删除记忆'); renderSettings();
+    }
+    return;
+  }
+  if (t.id === 'dCloudPush') {
+    try {
+      toast('正在同步对话到 Google 云…');
+      const r = await apiJSON('/api/cloud-convs', { user: state.prefs.memoryUser || 'default', convs: await dbAll() });
+      toast(`☁ 已备份 ${r.count} 个对话到 Google 免费云`);
+    } catch (err) { toast('云备份失败：' + err.message); }
+    return;
+  }
+  if (t.id === 'dCloudPull') {
+    try {
+      const r = await apiJSON(`/api/cloud-convs?user=${encodeURIComponent(state.prefs.memoryUser || 'default')}`);
+      if (!r.convs?.length) return toast('云端暂无该标识下的备份对话');
+      for (const c of r.convs) await dbPut(c);
+      state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);
+      renderConvList(); renderSettings();
+      toast(`☁ 已从 Google 云恢复 ${r.convs.length} 个对话`);
+    } catch (err) { toast('云恢复失败：' + err.message); }
+    return;
+  }
   const pid = t.closest('[data-pid]')?.dataset.pid;
   if (pid) { editingPreset = state.presets.find((p) => p.id === pid); renderSettings(); return; }
   const savePresets = () => LS.set('presets', state.presets);
@@ -760,7 +942,7 @@ $('#settingsBody').addEventListener('click', async (e) => {
   if (t.dataset.send) { state.prefs.sendKey = t.dataset.send; LS.set('prefs', state.prefs); renderSettings(); }
   if (t.id === 'logout') { state.token = ''; LS.set('token', ''); location.reload(); }
   if (t.id === 'dExport') {
-    const blob = new Blob([JSON.stringify({ app: 'gemini-tiyan', version: 1, convs: await dbAll(), presets: state.presets }, null, 0)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ app: 'gemini-tiyan', version: 1, convs: await dbAll(), presets: state.presets, memories: state.memories }, null, 0)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `gemini体验-备份-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   }
   if (t.id === 'dImport') $('#dImportFile').click();
@@ -770,17 +952,26 @@ $('#settingsBody').addEventListener('click', async (e) => {
   }
 });
 $('#settingsBody').addEventListener('change', async (e) => {
+  if (e.target.id === 'memEnableChk') { state.prefs.memoryEnabled = e.target.checked; LS.set('prefs', state.prefs); updateMemBadge(); renderComposer(); }
+  if (e.target.id === 'memAutoChk') { state.prefs.memoryAutoExtract = e.target.checked; LS.set('prefs', state.prefs); }
+  if (e.target.id === 'memCloudChk') { state.prefs.memoryCloudSync = e.target.checked; LS.set('prefs', state.prefs); if (e.target.checked) saveMemories('☁ 已开启 Google 云同步'); }
   if (e.target.id === 'gModel') { state.prefs.defaultModel = e.target.value; LS.set('prefs', state.prefs); toast('已更新默认模型'); }
   if (e.target.id === 'dImportFile' && e.target.files[0]) {
     try {
       const j = JSON.parse(await e.target.files[0].text());
       for (const c of j.convs || []) await dbPut(c);
       if (j.presets) { const ids = new Set(state.presets.map((p) => p.id)); state.presets.push(...j.presets.filter((p) => !ids.has(p.id))); LS.set('presets', state.presets); }
+      if (Array.isArray(j.memories)) { const mc = new Set(state.memories.map((m) => m.content)); state.memories.push(...j.memories.filter((m) => !mc.has(m.content))); await saveMemories(); }
       state.convs = await dbAll(); renderConvList(); renderSettings(); toast(`已导入 ${j.convs?.length || 0} 个对话`);
     } catch (err) { toast('导入失败：' + err.message); }
   }
 });
-$('#openSettings').onclick = () => openSettings();
+$('#settingsBody').addEventListener('keydown', (e) => {
+  if (e.target.id === 'memNewInput' && e.key === 'Enter') { e.preventDefault(); $('#memAddBtn')?.click(); }
+  if (e.target.id === 'memUserInput' && e.key === 'Enter') { e.preventDefault(); $('#memSwitchUser')?.click(); }
+});
+$('#openMemory').onclick = () => openSettings('memory');
+$('#openSettings').onclick = () => openSettings('prompts');
 
 // ---------------- 主题 / 侧栏 / 快捷键 ----------------
 function applyTheme() {
@@ -806,7 +997,7 @@ $('#loginForm').addEventListener('submit', async (e) => {
   const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#loginPwd').value }) });
   const j = await res.json();
   if (!res.ok) { $('#loginErr').textContent = j.error || '登录失败'; return; }
-  state.token = j.token; LS.set('token', j.token); $('#loginDialog').close(); toast('欢迎回来');
+  state.token = j.token; LS.set('token', j.token); $('#loginDialog').close(); loadMemories(); toast('欢迎回来');
 });
 $('#loginDialog').addEventListener('cancel', (e) => e.preventDefault());
 
@@ -815,10 +1006,11 @@ applyTheme();
 if (LS.get('panelClosed', innerWidth < 1100)) $('#panel').classList.add('closed');
 try {
   const cfg = await (await fetch('/api/config')).json();
-  state.models = cfg.models; state.needPassword = cfg.needPassword; state.project = cfg.project;
+  state.models = cfg.models; state.needPassword = cfg.needPassword; state.project = cfg.project; state.memoryBucket = cfg.memoryBucket || '';
   if (!allModels().some((m) => m.id === state.prefs.defaultModel)) state.prefs.defaultModel = state.models[0]?.id;
   if (cfg.needPassword && !state.token) showLogin();
 } catch { toast('无法连接服务端'); }
 state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);
+await loadMemories();
 openConv(newDraft(state.prefs.defaultModel));
 input.focus();

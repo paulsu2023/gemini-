@@ -3,8 +3,9 @@ node_modules/
 npm-debug.log*
 .DS_Store
 
-# ⚠️ 密钥绝不入库
+# ⚠️ 密钥与本地用户数据绝不入库
 credentials/
+data/
 *.json.key
 .env
 .env.*

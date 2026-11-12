@@ -25,7 +25,8 @@
     <div class="search"><input id="searchConv" placeholder="搜索对话…" /></div>
     <nav class="conv-list" id="convList"></nav>
     <div class="sidebar-foot">
-      <button class="foot-btn" id="openSettings">⚙ 设置与提示词库</button>
+      <button class="foot-btn" id="openMemory" title="长期记忆库">🧠 记忆 <span id="memBadge"></span></button>
+      <button class="foot-btn" id="openSettings">⚙ 设置与提示词</button>
       <button class="foot-btn" id="toggleTheme" title="切换明暗">◐</button>
     </div>
   </aside>
@@ -82,9 +83,10 @@
     <header class="dialog-head">
       <h2>设置</h2>
       <div class="tabs" id="settingsTabs">
+        <button type="button" data-tab="memory">🧠 长期记忆</button>
         <button type="button" data-tab="prompts" class="active">前置提示词库</button>
         <button type="button" data-tab="general">通用</button>
-        <button type="button" data-tab="data">数据</button>
+        <button type="button" data-tab="data">数据与云同步</button>
         <button type="button" data-tab="about">关于</button>
       </div>
       <button class="icon-btn" value="close">✕</button>

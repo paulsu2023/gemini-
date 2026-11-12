@@ -1,5 +1,5 @@
 // Gemini 体验 —— Vertex AI 代理服务端
-// 职责：持有服务账号凭据（绝不下发到浏览器）、自动适配本地系统代理、转发对话/画图/Omni与Veo视频/语音请求
+// 职责：持有服务账号凭据（绝不下发到浏览器）、自动适配本地系统代理、转发对话/画图/Omni与Veo视频/语音请求、本地+Google云免费层长期记忆存储
 import 'dotenv/config';
 import express from 'express';
 import crypto from 'node:crypto';
@@ -11,6 +11,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import nodeFetch from 'node-fetch';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { GoogleAuth } from 'google-auth-library';
 import { GoogleGenAI } from '@google/genai';
 import { MODELS } from './models.js';
 
@@ -95,6 +96,8 @@ function loadCredentials() {
 }
 const credentials = loadCredentials();
 const PROJECT = process.env.GCP_PROJECT || credentials.project_id;
+const MEMORY_BUCKET = process.env.MEMORY_BUCKET || `${PROJECT}-gemini-memory`;
+const googleAuth = new GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 
 // 按区域缓存客户端（Gemini 3/4/Omni 在 global，Veo 在 us-central1）
 const clients = new Map();
@@ -135,7 +138,7 @@ app.use('/vendor/hljs', express.static(nm('@highlightjs/cdn-assets')));
 app.use('/vendor/katex', express.static(nm('katex/dist')));
 
 app.get('/api/config', (req, res) => {
-  res.json({ needPassword: !!ACCESS_PASSWORD, project: PROJECT, models: MODELS });
+  res.json({ needPassword: !!ACCESS_PASSWORD, project: PROJECT, memoryBucket: MEMORY_BUCKET, models: MODELS });
 });
 app.post('/api/login', (req, res) => {
   if (!ACCESS_PASSWORD) return res.json({ token: '' });
@@ -147,6 +150,176 @@ const errMsg = (e) => {
   const s = String(e?.message || e);
   try { const j = JSON.parse(s); return j.error?.message || s; } catch { return s; }
 };
+
+// ---------- 长期记忆与云端同步（本地 data/ 目录 + Google Cloud Storage US-CENTRAL1 永久免费层） ----------
+const LOCAL_MEM_DIR = path.join(__dirname, 'data', 'memories');
+fs.mkdirSync(LOCAL_MEM_DIR, { recursive: true });
+
+function safeUserKey(raw = 'default') {
+  const s = String(raw || 'default').trim().toLowerCase().slice(0, 64);
+  if (!s) return 'default';
+  // 允许中文/字母/数字/下划线/短横线，同时附带短哈希避免碰撞或路径穿越
+  const clean = s.replace(/[^a-z0-9_\-\u4e00-\u9fa5]/g, '_');
+  const hash = crypto.createHash('sha1').update(s).digest('hex').slice(0, 8);
+  return s === 'default' ? 'default' : `${clean}-${hash}`;
+}
+
+let bucketReady = false;
+async function ensureMemoryBucket(token) {
+  if (bucketReady) return;
+  const check = await fetch(`https://storage.googleapis.com/storage/v1/b/${ encodeURIComponent(MEMORY_BUCKET) }`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (check.status === 200) { bucketReady = true; return; }
+  if (check.status === 404) {
+    const create = await fetch(`https://storage.googleapis.com/storage/v1/b?project=${encodeURIComponent(PROJECT)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: MEMORY_BUCKET,
+        location: 'US-CENTRAL1',
+        storageClass: 'STANDARD',
+        iamConfiguration: { uniformBucketLevelAccess: { enabled: true }, publicAccessPrevention: 'enforced' },
+      }),
+    });
+    if (create.ok || create.status === 409) bucketReady = true;
+  }
+}
+
+async function gcsReadJson(objectName) {
+  const token = await googleAuth.getAccessToken();
+  await ensureMemoryBucket(token);
+  const url = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(MEMORY_BUCKET)}/o/${encodeURIComponent(objectName)}?alt=media`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GCS 读取失败 (${r.status})`);
+  return JSON.parse(await r.text());
+}
+
+async function gcsWriteJson(objectName, data) {
+  const token = await googleAuth.getAccessToken();
+  await ensureMemoryBucket(token);
+  const url = `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(MEMORY_BUCKET)}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(`GCS 写入失败 (${r.status})`);
+}
+
+function readLocalMemory(userKey) {
+  const f = path.join(LOCAL_MEM_DIR, `${userKey}.json`);
+  if (!fs.existsSync(f)) return null;
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; }
+}
+function writeLocalMemory(userKey, payload) {
+  const f = path.join(LOCAL_MEM_DIR, `${userKey}.json`);
+  fs.writeFileSync(f, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+// 读取记忆（合并本地文件与 Google Cloud 免费存储中较新的版本）
+app.get('/api/memory', auth, async (req, res) => {
+  const userKey = safeUserKey(req.query.user);
+  const cloud = req.query.cloud !== '0';
+  let localData = readLocalMemory(userKey);
+  let cloudData = null;
+  let cloudOk = false;
+  if (cloud) {
+    try {
+      cloudData = await gcsReadJson(`memories/${userKey}.json`);
+      cloudOk = true;
+    } catch {}
+  }
+  const chosen = (cloudData?.updatedAt || 0) > (localData?.updatedAt || 0) ? cloudData : (localData || cloudData || { memories: [], updatedAt: 0 });
+  if (chosen && chosen === cloudData) writeLocalMemory(userKey, chosen);
+  res.json({
+    userKey,
+    memories: chosen.memories || [],
+    updatedAt: chosen.updatedAt || 0,
+    cloudOk,
+    bucket: MEMORY_BUCKET,
+  });
+});
+
+// 保存记忆（同时写本地文件 + Google Cloud Storage 免费桶）
+app.post('/api/memory', auth, async (req, res) => {
+  try {
+    const userKey = safeUserKey(req.body?.user);
+    const memories = Array.isArray(req.body?.memories) ? req.body.memories : [];
+    const syncCloud = req.body?.syncCloud !== false;
+    const payload = { userKey, memories, updatedAt: Date.now() };
+    writeLocalMemory(userKey, payload);
+    let cloudOk = false, cloudErr = '';
+    if (syncCloud) {
+      try {
+        await gcsWriteJson(`memories/${userKey}.json`, payload);
+        cloudOk = true;
+      } catch (e) { cloudErr = errMsg(e); }
+    }
+    res.json({ ok: true, userKey, updatedAt: payload.updatedAt, cloudOk, cloudErr, bucket: MEMORY_BUCKET });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// 从对话自动提炼长期记忆（调用轻量快速的 gemini-3.5-flash-lite）
+app.post('/api/memory/extract', auth, async (req, res) => {
+  try {
+    const { messages = [], existing = [] } = req.body || {};
+    const snippet = messages.slice(-8).map((m) => `${m.role === 'user' ? '用户' : 'AI'}：${m.text || ''}`).join('\n');
+    const existingList = existing.map((m, i) => `${i + 1}. ${m.content}`).join('\n') || '（暂无）';
+    const prompt = `你是一个“用户长期记忆提炼器”。请阅读以下近期对话，判断用户是否透露了值得在未来跨对话中长期记住的个人信息（例如：姓名/称呼、职业/业务领域、技术栈、语言或排版偏好、固定工作流、明确要求“记住…”的事项）。
+已有记忆：
+${existingList}
+
+近期对话：
+${snippet}
+
+规则：
+1. 只提取关于【用户本人】的稳定事实、长期偏好或明确指令；不要提取单次临时任务内容或常识。
+2. 与“已有记忆”语义重复的不要重复提取。
+3. 每条记忆用简短精炼的一句话陈述（例如：“用户从事跨境电商业务，偏好直接给出可落地的方案”）。
+4. 若没有任何值得新增的长期记忆，返回空数组。
+请严格返回 JSON 格式：{"added": ["记忆1", "记忆2"]}`;
+
+    const r = await client('global').models.generateContent({
+      model: 'gemini-3.5-flash-lite',
+      contents: prompt,
+      config: { responseMimeType: 'application/json', temperature: 0.2 },
+    });
+    const parsed = JSON.parse(r.text || '{"added":[]}');
+    const added = (Array.isArray(parsed.added) ? parsed.added : []).map((s) => String(s).trim()).filter(Boolean);
+    res.json({ added });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// 云端同步历史对话（将轻量对话记录同步到 Google Cloud Storage 免费桶，换设备/分享给朋友可按标识恢复）
+app.get('/api/cloud-convs', auth, async (req, res) => {
+  try {
+    const userKey = safeUserKey(req.query.user);
+    const data = await gcsReadJson(`convs/${userKey}.json`);
+    res.json({ userKey, convs: data?.convs || [], updatedAt: data?.updatedAt || 0 });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+app.post('/api/cloud-convs', auth, async (req, res) => {
+  try {
+    const userKey = safeUserKey(req.body?.user);
+    // 为节省免费额度，云端备份剔除超大体积的 base64 视频/图片二进制，仅保留全部文本对话与设定
+    const rawConvs = Array.isArray(req.body?.convs) ? req.body.convs : [];
+    const slimConvs = rawConvs.slice(0, 100).map((c) => ({
+      ...c,
+      messages: (c.messages || []).map((m) => ({
+        ...m,
+        parts: (m.parts || []).map((p) => (p.inlineData && p.inlineData.data?.length > 120_000)
+          ? { text: `[媒体文件 ${p.inlineData.mimeType}，保存在原设备本地]` }
+          : p),
+      })),
+    }));
+    const payload = { userKey, convs: slimConvs, updatedAt: Date.now() };
+    await gcsWriteJson(`convs/${userKey}.json`, payload);
+    res.json({ ok: true, userKey, count: slimConvs.length, updatedAt: payload.updatedAt });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
 
 // ---------- 对话 / Gemini 原生画图（流式 SSE） ----------
 // 历史里的思考文本（thought:true）不回传，但要保留 thoughtSignature（Gemini 3/4 多轮必需）
