@@ -7,7 +7,9 @@
 - **多模态全模型切换**：
   - 💬 **对话**：Gemini 4 Argon / Carbon、Gemini 3.8 / 3.7 / 3.6 / 3.5 Flash、Gemini 3.1 Pro 等；支持上传图片 / PDF / 音视频 / 代码与文档、思考过程展示、Google 联网搜索 Grounding、网页读取、Python 代码执行、JSON 输出模式。
   - 🎨 **画图**：Nano Banana 2.1、Gemini 3 Pro Image（支持 1K/2K/4K）、Gemini 3.1 Flash Image；支持比例选择、参考图上传、多轮对话改图。
-  - 🎬 **视频**：Veo 3.1 / Fast / Lite；支持 16:9 与 9:16、4/6/8 秒、720p/1080p/4K、同步生成对白与音效、首帧图生视频、首尾帧插值。
+  - 🎬 **视频（双引擎）**：
+    - **Gemini Omni 1.2 Flash / Omni 1.1 Flash / Omni Flash**（走 Vertex AI Interactions API，支持最高 **15 秒** 音画同步视频与参考图生视频）；
+    - **Veo 3.1 / Fast / Lite**（支持 16:9 与 9:16、4/6/8 秒、720p/1080p/4K、同步生成对白与音效、首帧图生视频、首尾帧插值）。
   - 🔊 **语音**：Gemini 3.8 / 2.5 Flash TTS，30 种音色 + 自然语言语气控制。
   - 🧪 **自定义模型**：顶部模型菜单可直接输入任意 Vertex 模型 ID 尝鲜。
 - **前置提示词库 & 运行设置**：右侧面板随时调整 System Prompt、温度、Top-P、思考强度、安全过滤等；可将常用人设存入提示词库或设为新对话默认。

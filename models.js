@@ -1,5 +1,5 @@
 // 模型目录：kind 决定前端交互模式；location 为该模型在 Vertex AI 上可用的区域
-// 列表经 scripts/probe*.mjs 在本项目实测可用（2026-11）。新模型可在网页「自定义模型」里直接填 ID 体验。
+// 列表经本项目实测可用（2026-11）。新模型可在网页「自定义模型」里直接填 ID 体验。
 export const MODELS = [
   // —— 对话 ——
   { id: 'gemini-4-argon', name: 'Gemini 4 Argon', kind: 'chat', location: 'global', desc: '新一代旗舰，复杂推理' },
@@ -18,10 +18,13 @@ export const MODELS = [
   { id: 'gemini-3.1-flash-image', name: 'Gemini 3.1 Flash Image', kind: 'image', location: 'global', desc: '快速出图' },
   { id: 'gemini-3.1-flash-lite-image', name: 'Gemini 3.1 Flash Lite Image', kind: 'image', location: 'global', desc: '低价出图' },
   { id: 'gemini-2.5-flash-image', name: 'Gemini 2.5 Flash Image', kind: 'image', location: 'global' },
-  // —— 视频 ——
-  { id: 'veo-3.1-generate-001', name: 'Veo 3.1', kind: 'video', location: 'us-central1', desc: '最高画质，带音频' },
-  { id: 'veo-3.1-fast-generate-001', name: 'Veo 3.1 Fast', kind: 'video', location: 'us-central1', desc: '更快更省' },
-  { id: 'veo-3.1-lite-generate-001', name: 'Veo 3.1 Lite', kind: 'video', location: 'us-central1', desc: '最省钱' },
+  // —— 视频（Gemini Omni 走 Interactions API / global；Veo 3.1 走 generateVideos / us-central1） ——
+  { id: 'gemini-omni-1.2-flash', name: 'Gemini Omni 1.2 Flash', kind: 'video', api: 'interactions', location: 'global', desc: '最新 Omni 视频，支持最高 15 秒音画同步' },
+  { id: 'gemini-omni-1.1-flash-preview', name: 'Gemini Omni 1.1 Flash', kind: 'video', api: 'interactions', location: 'global', desc: 'Omni 8~10 秒音画同步视频' },
+  { id: 'gemini-omni-flash-preview', name: 'Gemini Omni Flash (预览)', kind: 'video', api: 'interactions', location: 'global', desc: 'Omni 极速视频生成' },
+  { id: 'veo-3.1-generate-001', name: 'Veo 3.1', kind: 'video', api: 'veo', location: 'us-central1', desc: '最高画质，带音频' },
+  { id: 'veo-3.1-fast-generate-001', name: 'Veo 3.1 Fast', kind: 'video', api: 'veo', location: 'us-central1', desc: '更快更省' },
+  { id: 'veo-3.1-lite-generate-001', name: 'Veo 3.1 Lite', kind: 'video', api: 'veo', location: 'us-central1', desc: '最省钱' },
   // —— 语音合成 ——
   { id: 'gemini-3.8-flash-tts', name: 'Gemini 3.8 Flash TTS', kind: 'tts', location: 'global' },
   { id: 'gemini-3.8-flash-lite-tts', name: 'Gemini 3.8 Flash Lite TTS', kind: 'tts', location: 'global' },

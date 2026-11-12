@@ -10,7 +10,7 @@ const STAR = '<svg viewBox="0 0 64 64"><path d="M32 4c2 15 13 26 28 28-15 2-26 1
 const KINDS = {
   chat: { label: '对话', icon: '💬', desc: '问答、写作、编程、读文件', ph: '输入消息，Enter 发送，Shift+Enter 换行…' },
   image: { label: '画图', icon: '🎨', desc: '文生图、上传参考图改图', ph: '描述你想要的画面；可上传参考图让它改图…' },
-  video: { label: '视频', icon: '🎬', desc: 'Veo 文生视频、图生视频', ph: '描述视频画面与镜头运动；上传 1 张图=首帧，2 张=首帧+尾帧…' },
+  video: { label: '视频', icon: '🎬', desc: 'Gemini Omni / Veo 3.1 文生与图生视频', ph: '描述视频画面与镜头运动；可上传参考图或首尾帧…' },
   tts: { label: '语音', icon: '🔊', desc: '文字转自然语音', ph: '输入要朗读的文字…' },
 };
 const EXAMPLES = {
@@ -584,7 +584,7 @@ async function runVideo(conv, info, history, msg) {
   if (!prompt && !imgs.length) throw new Error('请描述视频内容或上传首帧图片');
   const s = conv.settings;
   const r = await apiJSON('/api/video', {
-    model: conv.model, location: info.location, prompt, image: imgs[0], lastFrame: imgs[1],
+    model: conv.model, location: info.location, prompt, image: imgs[0], lastFrame: imgs[1], images: imgs,
     settings: { aspectRatio: s.vAspect, durationSeconds: s.vDuration, resolution: s.vResolution, generateAudio: s.vAudio, numberOfVideos: s.vCount, negativePrompt: s.vNegative, enhancePrompt: s.vEnhance, personGeneration: s.vPerson, seed: s.vSeed },
   });
   msg.meta.job = { id: r.id, done: false, elapsed: 0 };
@@ -648,16 +648,21 @@ function renderPanel() {
     html += `<p class="hint">提示：上传图片 + 文字即可改图；点生成图上的「作为附件」可以继续迭代。</p>`;
   }
   if (kind === 'video') {
+    const isOmni = /omni/i.test(c.model);
+    if (!isOmni && s.vDuration > 8) s.vDuration = 8;
+    const durOpts = isOmni
+      ? [[4, '4 秒'], [6, '6 秒'], [8, '8 秒'], [10, '10 秒'], [15, '15 秒']]
+      : [[4, '4 秒'], [6, '6 秒'], [8, '8 秒']];
     html += seg('vAspect', '画面比例', [['16:9', '横屏 16:9'], ['9:16', '竖屏 9:16']]);
-    html += seg('vDuration', '时长', [[4, '4 秒'], [6, '6 秒'], [8, '8 秒']]);
+    html += seg('vDuration', '时长', durOpts);
     html += seg('vResolution', '分辨率', [['720p'], ['1080p'], ['4k', '4K']]);
-    html += seg('vCount', '生成数量', [[1], [2], [3], [4]]);
+    if (!isOmni) html += seg('vCount', '生成数量', [[1], [2], [3], [4]]);
     html += tog('vAudio', '同时生成音频', '对白、音效、配乐');
-    html += tog('vEnhance', '自动优化提示词');
-    html += `<div class="field"><label>人物生成</label><select data-k="vPerson"><option value="allow_adult" ${s.vPerson === 'allow_adult' ? 'selected' : ''}>允许成人</option><option value="allow_all" ${s.vPerson === 'allow_all' ? 'selected' : ''}>允许所有</option><option value="dont_allow" ${s.vPerson === 'dont_allow' ? 'selected' : ''}>不允许人物</option></select></div>`;
+    if (!isOmni) html += tog('vEnhance', '自动优化提示词');
+    if (!isOmni) html += `<div class="field"><label>人物生成</label><select data-k="vPerson"><option value="allow_adult" ${s.vPerson === 'allow_adult' ? 'selected' : ''}>允许成人</option><option value="allow_all" ${s.vPerson === 'allow_all' ? 'selected' : ''}>允许所有</option><option value="dont_allow" ${s.vPerson === 'dont_allow' ? 'selected' : ''}>不允许人物</option></select></div>`;
     html += `<div class="field"><label>反向提示词<small>不想出现的内容</small></label><input type="text" data-k="vNegative" value="${esc(s.vNegative)}" placeholder="如：模糊、文字水印"></div>`;
     html += `<div class="field"><label>随机种子<small>留空=随机</small></label><input type="number" data-k="vSeed" value="${esc(s.vSeed)}"></div>`;
-    html += `<p class="hint">上传 1 张图作为首帧（图生视频），2 张图则为首帧 + 尾帧。视频生成通常需要 1-3 分钟，按秒计费。</p>`;
+    html += `<p class="hint">${isOmni ? 'Gemini Omni 走 Vertex AI Interactions 通道（global），支持最高 15 秒音画同步及参考图生视频。' : 'Veo 3.1 上传 1 张图作为首帧（图生视频），2 张图则为首帧 + 尾帧。'}视频生成通常需要 30~120 秒。</p>`;
   }
   if (kind === 'tts') {
     html += `<div class="field"><label>音色</label><select data-k="voice">${VOICES.map((v) => `<option ${s.voice === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>`;
