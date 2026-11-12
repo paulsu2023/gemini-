@@ -73,6 +73,8 @@ const state = {
   adminUsers: [], adminPassword: 'brysj', adminInspectHtml: '',
   // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
   token: '', busy: false, abort: null, attachments: [], needPassword: true,
+  needVideoPassword: !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname),
+  videoPassword: '',
 };
 const allModels = () => [...state.models, ...state.custom];
 const modelInfo = (id) => allModels().find((m) => m.id === id) || { id, name: id, kind: 'chat', location: 'global' };
@@ -159,6 +161,10 @@ async function api(path, opts = {}) {
   });
   if (res.status === 401 || res.status === 403) {
     const j = await res.clone().json().catch(() => ({}));
+    if (j.needVideoPassword) {
+      state.videoPassword = '';
+      throw new Error(j.error || '视频解锁密码错误，线上环境禁止生成视频');
+    }
     showLogin(j.error || '请先输入昵称与访问密码登录');
     throw new Error(j.error || '需要登录');
   }
@@ -689,12 +695,18 @@ async function runTTS(conv, info, history, msg) {
 
 async function runVideo(conv, info, history, msg) {
   const last = history.at(-1);
-  const prompt = last.parts.filter((p) => p.text).map((p) => p.text).join('\n');
+  const promptText = last.parts.filter((p) => p.text).map((p) => p.text).join('\n');
   const imgs = last.parts.filter((p) => p.inlineData?.mimeType.startsWith('image/')).map((p) => p.inlineData);
-  if (!prompt && !imgs.length) throw new Error('请描述视频内容或上传首帧图片');
+  if (!promptText && !imgs.length) throw new Error('请描述视频内容或上传首帧图片');
+  if (state.needVideoPassword && !state.videoPassword) {
+    const vpwd = window.prompt('🎬 线上环境已禁止直接生成视频，请输入视频专属密码解锁：');
+    if (!vpwd || !vpwd.trim()) throw new Error('未输入视频专属密码，线上环境禁止生成视频');
+    state.videoPassword = vpwd.trim();
+  }
   const s = conv.settings;
   const r = await apiJSON('/api/video', {
-    model: conv.model, location: info.location, prompt, image: imgs[0], lastFrame: imgs[1], images: imgs,
+    model: conv.model, location: info.location, prompt: promptText, image: imgs[0], lastFrame: imgs[1], images: imgs,
+    videoPassword: state.videoPassword,
     settings: { aspectRatio: s.vAspect, durationSeconds: s.vDuration, resolution: s.vResolution, generateAudio: s.vAudio, numberOfVideos: s.vCount, negativePrompt: s.vNegative, enhancePrompt: s.vEnhance, personGeneration: s.vPerson, seed: s.vSeed },
   });
   msg.meta.job = { id: r.id, done: false, elapsed: 0 };
@@ -1152,6 +1164,9 @@ $('#loginForm').addEventListener('submit', async (e) => {
   updateUserBadge();
   $('#loginDialog').close();
   await loadMemories();
+  if (location.pathname === '/admin' || location.hash === '#admin' || new URLSearchParams(location.search).get('admin') === '1') {
+    openSettings('admin');
+  }
   toast(`🎉 欢迎你，${j.nickname}！已载入你的专属记忆空间`);
   input.focus();
 });
@@ -1166,6 +1181,7 @@ if (LS.get('panelClosed', innerWidth < 1100)) $('#panel').classList.add('closed'
 try {
   const cfg = await (await fetch('/api/config')).json();
   state.models = cfg.models; state.needPassword = cfg.needPassword; state.project = cfg.project; state.memoryBucket = cfg.memoryBucket || '';
+  if (cfg.needVideoPassword !== undefined) state.needVideoPassword = !!cfg.needVideoPassword;
   if (!allModels().some((m) => m.id === state.prefs.defaultModel)) state.prefs.defaultModel = state.models[0]?.id;
 } catch { toast('无法连接服务端'); }
 state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);

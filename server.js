@@ -19,6 +19,7 @@ import { MODELS } from './models.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD || 'brysj';
+const VIDEO_PASSWORD = process.env.VIDEO_PASSWORD || 'hhrhl';
 const DEFAULT_REGION = process.env.VERTEX_REGION || 'us-central1';
 
 // ---------- 代理自动探测与挂载（解决国内 Windows 开启系统代理但未设环境变量导致 Node fetch 超时/断连） ----------
@@ -167,8 +168,29 @@ app.use('/vendor/dompurify', express.static(nm('dompurify/dist')));
 app.use('/vendor/hljs', express.static(nm('@highlightjs/cdn-assets')));
 app.use('/vendor/katex', express.static(nm('katex/dist')));
 
+// 判断是否为本机 localhost / 127.0.0.1 直接访问（本机直连无需视频密码；线上 Vercel / Cloudflare 隧道等外网访问强制要求视频密码 hhrhl）
+function isLocalDirectRequest(req) {
+  if (process.env.VERCEL || process.env.REQUIRE_VIDEO_PASSWORD === '1') return false;
+  if (req.get('cf-ray') || req.get('cf-connecting-ip') || req.get('x-forwarded-for')) return false;
+  const host = (req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+  const origin = (req.get('origin') || req.get('referer') || '').toLowerCase();
+  if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(origin)) return false;
+  return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
+}
+
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
 app.get('/api/config', (req, res) => {
-  res.json({ needPassword: !!ACCESS_PASSWORD, requireNickname: true, project: PROJECT, memoryBucket: MEMORY_BUCKET, models: MODELS });
+  res.json({
+    needPassword: !!ACCESS_PASSWORD,
+    requireNickname: true,
+    needVideoPassword: !isLocalDirectRequest(req),
+    project: PROJECT,
+    memoryBucket: MEMORY_BUCKET,
+    models: MODELS,
+  });
 });
 
 const errMsg = (e) => {
@@ -625,6 +647,15 @@ function isOmniVideoModel(model = '') {
 
 app.post('/api/video', auth, async (req, res) => {
   try {
+    if (!isLocalDirectRequest(req)) {
+      const vpwd = String(req.body?.videoPassword || req.get('x-video-password') || '').trim();
+      if (vpwd !== VIDEO_PASSWORD) {
+        return res.status(403).json({
+          error: '线上环境已限制视频生成，请输入视频专属密码解锁',
+          needVideoPassword: true,
+        });
+      }
+    }
     const { model, prompt = '', image, lastFrame, images = [], settings = {} } = req.body;
     recordUserActivity(req.userNickname, { type: 'video', model, preview: prompt });
     const id = crypto.randomUUID();
