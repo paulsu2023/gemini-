@@ -4,6 +4,7 @@ export const MODELS = [
   // —— 对话 ——
   { id: 'gemini-4-argon', name: 'Gemini 4 Argon', kind: 'chat', location: 'global', desc: '新一代旗舰，复杂推理' },
   { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', kind: 'chat', location: 'global', desc: '新一代旗舰，均衡' },
+  { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', kind: 'chat', location: 'global', desc: '新一代轻量旗舰，极速高性价比' },
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', kind: 'chat', location: 'global', desc: '最新 Flash，快且强' },
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', kind: 'chat', location: 'global' },
   { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', kind: 'chat', location: 'global' },
