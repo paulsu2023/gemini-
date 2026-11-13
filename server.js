@@ -47,35 +47,50 @@ async function setupProxyIfAvailable() {
     if (!ok) return;
     process.env.HTTPS_PROXY = proxyUrl;
     process.env.HTTP_PROXY = proxyUrl;
-    const agent = new HttpsProxyAgent(proxyUrl);
     const nativeFetch = globalThis.fetch;
     globalThis.fetch = async (input, init = {}) => {
       const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input?.url || '';
       if (/^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(rawUrl)) return nativeFetch(input, init);
       let url = input;
-      let opts = { ...init, agent };
+      let baseOpts = { ...init };
       if (input && typeof input === 'object' && 'url' in input && !(input instanceof URL)) {
         url = input.url;
-        opts = {
+        baseOpts = {
           method: input.method,
           headers: Object.fromEntries(input.headers.entries()),
           body: input.body ? Buffer.from(await input.arrayBuffer()) : undefined,
           signal: input.signal || init.signal,
           ...init,
-          agent,
         };
       }
-      const res = await nodeFetch(url, opts);
-      if (res.body && !res.body.getReader) {
-        return new Response(Readable.toWeb(res.body), {
-          status: res.status,
-          statusText: res.statusText,
-          headers: Object.fromEntries(res.headers.entries()),
-        });
+      // 每次请求使用独立非复用连接（避免本地 Clash/代理关闭空闲连接导致 TLS 握手断连），并对瞬态断连自动重试 3 次
+      let lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const agent = new HttpsProxyAgent(proxyUrl, { keepAlive: false });
+          const res = await nodeFetch(url, { ...baseOpts, agent });
+          if (res.body && !res.body.getReader) {
+            return new Response(Readable.toWeb(res.body), {
+              status: res.status,
+              statusText: res.statusText,
+              headers: Object.fromEntries(res.headers.entries()),
+            });
+          }
+          return res;
+        } catch (err) {
+          lastErr = err;
+          if (baseOpts.signal?.aborted) throw err;
+          const msg = String(err?.message || err);
+          if (attempt < 2 && /socket disconnected|ECONNRESET|ETIMEDOUT|socket hang up|EPIPE|network|fetch failed/i.test(msg)) {
+            await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
       }
-      return res;
+      throw lastErr;
     };
-    console.log(`🌐 已启用网络代理：${proxyUrl}`);
+    console.log(`🌐 已启用网络代理（含 TLS 防断连自动重试）：${proxyUrl}`);
   } catch {}
 }
 await setupProxyIfAvailable();
@@ -119,35 +134,46 @@ function resolveLocation(model, fallback) {
   return fallback || 'global';
 }
 
-// ---------- 访问密码与朋友昵称登录认证（默认口令 brysj） ----------
+// ---------- 访问密码与朋友昵称登录认证（普通朋友口令 brysj，管理员/视频解锁口令 hhrhl） ----------
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || VIDEO_PASSWORD || 'hhrhl';
 const tokenOf = (pwd) => crypto.createHash('sha256').update('gemini-tiyan:' + pwd).digest('hex');
 const VALID_TOKEN = ACCESS_PASSWORD ? tokenOf(ACCESS_PASSWORD) : '';
 
-function makeUserToken(nickname = 'default') {
-  const b64 = Buffer.from(String(nickname).trim(), 'utf8').toString('base64url');
-  const sig = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD).update(b64).digest('hex');
+function makeUserToken(nickname = 'default', isAdmin = false) {
+  const payload = JSON.stringify({ n: String(nickname).trim() || 'default', a: isAdmin ? 1 : 0 });
+  const b64 = Buffer.from(payload, 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD + ':' + ADMIN_PASSWORD).update(b64).digest('hex');
   return `${b64}.${sig}`;
 }
 
 function parseUserToken(token = '') {
-  if (!ACCESS_PASSWORD) return { ok: true, nickname: 'default' };
+  if (!ACCESS_PASSWORD) return { ok: true, nickname: 'default', isAdmin: true };
   if (!token) return { ok: false };
   if (token.includes('.')) {
     const [b64, sig] = token.split('.');
-    const expected = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD).update(b64 || '').digest('hex');
-    if (sig && sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
-      const nickname = Buffer.from(b64, 'base64url').toString('utf8') || 'default';
-      return { ok: true, nickname };
+    const expected1 = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD + ':' + ADMIN_PASSWORD).update(b64 || '').digest('hex');
+    const expectedLegacy = crypto.createHmac('sha256', 'gemini-tiyan:' + ACCESS_PASSWORD).update(b64 || '').digest('hex');
+    const match1 = sig && sig.length === expected1.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected1));
+    const matchLegacy = !match1 && sig && sig.length === expectedLegacy.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedLegacy));
+    if (match1 || matchLegacy) {
+      const raw = Buffer.from(b64, 'base64url').toString('utf8') || 'default';
+      if (raw.startsWith('{')) {
+        try {
+          const obj = JSON.parse(raw);
+          return { ok: true, nickname: obj.n || 'default', isAdmin: !!obj.a };
+        } catch {}
+      }
+      return { ok: true, nickname: raw, isAdmin: false };
     }
     return { ok: false };
   }
   if (token.length === VALID_TOKEN.length && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(VALID_TOKEN))) {
-    return { ok: true, nickname: 'default' };
+    return { ok: true, nickname: 'default', isAdmin: false };
   }
   return { ok: false };
 }
 
-// 判断是否为本机 localhost / 127.0.0.1 直接访问（本机主人自用免登录、免密码、免视频密码；线上 Vercel / Cloudflare 隧道等公网访问强制要求登录与视频密码）
+// 判断是否为本机 localhost / 127.0.0.1 直接访问（本机主人自用免登录、免密码、免视频密码、直享管理员权限）
 function isLocalDirectRequest(req) {
   if (process.env.VERCEL || process.env.REQUIRE_VIDEO_PASSWORD === '1') return false;
   if (req.get('cf-ray') || req.get('cf-connecting-ip') || req.get('x-forwarded-for')) return false;
@@ -161,6 +187,7 @@ function auth(req, res, next) {
   if (isLocalDirectRequest(req)) {
     const headerNick = req.get('x-user-nickname') ? decodeURIComponent(req.get('x-user-nickname')) : '';
     req.userNickname = (headerNick || 'default').trim();
+    req.isAdmin = true;
     return next();
   }
   const t = req.get('x-access-token') || req.query.token || '';
@@ -168,9 +195,20 @@ function auth(req, res, next) {
   if (!parsed.ok) return res.status(401).json({ error: '请先输入昵称与访问密码登录' });
   const headerNick = req.get('x-user-nickname') ? decodeURIComponent(req.get('x-user-nickname')) : '';
   req.userNickname = (headerNick || parsed.nickname || 'default').trim();
+  req.isAdmin = !!parsed.isAdmin || (req.get('x-admin-password') === ADMIN_PASSWORD);
   const u = usersRegistry.users?.[safeUserKey(req.userNickname)];
-  if (u?.blocked) return res.status(403).json({ error: `昵称「${req.userNickname}」已被管理员停用` });
+  if (u?.blocked && !req.isAdmin) return res.status(403).json({ error: `昵称「${req.userNickname}」已被管理员停用` });
   next();
+}
+
+// 管理员专属权限校验：仅允许本机 localhost 直连，或携带管理员密码 (hhrhl) 的请求访问
+function adminAuth(req, res, next) {
+  auth(req, res, () => {
+    if (req.isAdmin || isLocalDirectRequest(req) || req.get('x-admin-password') === ADMIN_PASSWORD) {
+      return next();
+    }
+    return res.status(403).json({ error: '仅管理员可访问用户管理后台（需管理员口令）', needAdminPassword: true });
+  });
 }
 
 const app = express();
@@ -193,6 +231,7 @@ app.get('/api/config', (req, res) => {
     needPassword: !isLocal && !!ACCESS_PASSWORD,
     requireNickname: !isLocal,
     needVideoPassword: !isLocal,
+    isAdmin: isLocal,
     project: PROJECT,
     memoryBucket: MEMORY_BUCKET,
     models: MODELS,
@@ -317,12 +356,20 @@ async function syncUsersFromCloud() {
   return usersRegistry;
 }
 
-async function persistUsersToCloud() {
+let persistTimer = null;
+async function persistUsersToCloud(immediate = false) {
   saveLocalUsers();
-  try { await gcsWriteJson('admin/users.json', usersRegistry); } catch {}
+  if (immediate || process.env.VERCEL) {
+    try { await gcsWriteJson('admin/users.json', usersRegistry); } catch {}
+    return;
+  }
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(async () => {
+    try { await gcsWriteJson('admin/users.json', usersRegistry); } catch {}
+  }, 4000);
 }
 
-async function recordUserActivity(rawNickname, event = {}) {
+async function recordUserActivity(rawNickname, event = {}, immediate = false) {
   const nickname = String(rawNickname || 'default').trim().slice(0, 32) || 'default';
   const userKey = safeUserKey(nickname);
   if (!usersRegistry.users) usersRegistry.users = {};
@@ -343,31 +390,42 @@ async function recordUserActivity(rawNickname, event = {}) {
   if (event.preview) cur.lastPromptPreview = String(event.preview).replace(/\s+/g, ' ').trim().slice(0, 80);
   usersRegistry.users[userKey] = cur;
   usersRegistry.updatedAt = now;
-  await persistUsersToCloud();
+  await persistUsersToCloud(immediate);
   return cur;
 }
 
-// 启动时后台拉取一次云端用户账本
+// 启动时后台拉取一次云端用户账本并预热 OAuth2 令牌
 syncUsersFromCloud();
+googleAuth.getAccessToken().catch(() => {});
 
 app.post('/api/login', async (req, res) => {
   const nickname = String(req.body?.nickname || '').trim().slice(0, 32);
   const password = String(req.body?.password || '');
   if (!nickname) return res.status(400).json({ error: '请先填写你的昵称（方便为你独立保存记忆与对话）' });
-  if (ACCESS_PASSWORD && password !== ACCESS_PASSWORD) {
+  const isAdmin = password === ADMIN_PASSWORD;
+  if (ACCESS_PASSWORD && password !== ACCESS_PASSWORD && !isAdmin) {
     return res.status(401).json({ error: '访问密码错误，请输入正确的口令' });
   }
   await syncUsersFromCloud();
   const userKey = safeUserKey(nickname);
-  if (usersRegistry.users?.[userKey]?.blocked) {
+  if (usersRegistry.users?.[userKey]?.blocked && !isAdmin) {
     return res.status(403).json({ error: `昵称「${nickname}」已被管理员停用` });
   }
-  const entry = await recordUserActivity(nickname, { type: 'login' });
-  res.json({ token: makeUserToken(nickname), nickname: entry.nickname, userKey });
+  const entry = await recordUserActivity(nickname, { type: 'login' }, true);
+  res.json({ token: makeUserToken(nickname, isAdmin), nickname: entry.nickname, userKey, isAdmin });
 });
 
-// 管理员接口：查看全部朋友列表及实时用量统计
-app.get('/api/admin/users', auth, async (req, res) => {
+// 管理员专属口令校验接口：允许在线已登录用户通过输入管理员密码 (hhrhl) 解锁管理权限
+app.post('/api/admin/unlock', auth, (req, res) => {
+  const pwd = String(req.body?.password || '').trim();
+  if (req.isAdmin || isLocalDirectRequest(req) || pwd === ADMIN_PASSWORD) {
+    return res.json({ ok: true, isAdmin: true });
+  }
+  res.status(403).json({ error: '管理员密码错误' });
+});
+
+// 管理员专属接口：查看全部朋友列表及实时用量统计（仅限本机 localhost 或管理员口令 hhrhl 访问）
+app.get('/api/admin/users', adminAuth, async (req, res) => {
   try {
     await syncUsersFromCloud();
     const list = Object.values(usersRegistry.users || {}).sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
@@ -380,8 +438,8 @@ app.get('/api/admin/users', auth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: errMsg(e) }); }
 });
 
-// 管理员接口：停用/启用或删除某个用户
-app.post('/api/admin/user-action', auth, async (req, res) => {
+// 管理员专属接口：停用/启用或删除某个用户
+app.post('/api/admin/user-action', adminAuth, async (req, res) => {
   try {
     const { userKey, action } = req.body || {};
     await syncUsersFromCloud();
@@ -391,14 +449,14 @@ app.post('/api/admin/user-action', auth, async (req, res) => {
       u.blocked = !u.blocked;
       u.blockedUpdatedAt = Date.now();
       usersRegistry.updatedAt = Date.now();
-      await persistUsersToCloud();
+      await persistUsersToCloud(true);
       return res.json({ ok: true, user: u });
     }
     if (action === 'deleteUser') {
       delete usersRegistry.users[userKey];
       usersRegistry.deletedKeys = [...new Set([...(usersRegistry.deletedKeys || []), userKey])];
       usersRegistry.updatedAt = Date.now();
-      await persistUsersToCloud();
+      await persistUsersToCloud(true);
       return res.json({ ok: true });
     }
     res.status(400).json({ error: '未知操作' });
@@ -415,9 +473,10 @@ function writeLocalMemory(userKey, payload) {
   fs.writeFileSync(f, JSON.stringify(payload, null, 2), 'utf8');
 }
 
-// 读取记忆（合并本地文件与 Google Cloud 免费存储中较新的版本）
+// 读取记忆（合并本地文件与 Google Cloud 免费存储中较新的版本；非管理员仅允许读取自己昵称的记忆）
 app.get('/api/memory', auth, async (req, res) => {
-  const userKey = safeUserKey(req.query.user);
+  const targetUser = req.isAdmin ? (req.query.user || req.userNickname) : req.userNickname;
+  const userKey = safeUserKey(targetUser);
   const cloud = req.query.cloud !== '0';
   let localData = readLocalMemory(userKey);
   let cloudData = null;
@@ -439,10 +498,11 @@ app.get('/api/memory', auth, async (req, res) => {
   });
 });
 
-// 保存记忆（同时写本地文件 + Google Cloud Storage 免费桶）
+// 保存记忆（同时写本地文件 + Google Cloud Storage 免费桶；非管理员仅允许写入自己昵称的记忆）
 app.post('/api/memory', auth, async (req, res) => {
   try {
-    const userKey = safeUserKey(req.body?.user);
+    const targetUser = req.isAdmin ? (req.body?.user || req.userNickname) : req.userNickname;
+    const userKey = safeUserKey(targetUser);
     const memories = Array.isArray(req.body?.memories) ? req.body.memories : [];
     const syncCloud = req.body?.syncCloud !== false;
     const payload = { userKey, memories, updatedAt: Date.now() };
@@ -489,10 +549,11 @@ ${snippet}
   } catch (e) { res.status(500).json({ error: errMsg(e) }); }
 });
 
-// 云端同步历史对话（将轻量对话记录同步到 Google Cloud Storage 免费桶，换设备/分享给朋友可按标识恢复）
+// 云端同步历史对话（将轻量对话记录同步到 Google Cloud Storage 免费桶；非管理员仅允许读写自己昵称的数据）
 app.get('/api/cloud-convs', auth, async (req, res) => {
   try {
-    const userKey = safeUserKey(req.query.user);
+    const targetUser = req.isAdmin ? (req.query.user || req.userNickname) : req.userNickname;
+    const userKey = safeUserKey(targetUser);
     const data = await gcsReadJson(`convs/${userKey}.json`);
     res.json({ userKey, convs: data?.convs || [], updatedAt: data?.updatedAt || 0 });
   } catch (e) { res.status(500).json({ error: errMsg(e) }); }
@@ -500,7 +561,8 @@ app.get('/api/cloud-convs', auth, async (req, res) => {
 
 app.post('/api/cloud-convs', auth, async (req, res) => {
   try {
-    const userKey = safeUserKey(req.body?.user);
+    const targetUser = req.isAdmin ? (req.body?.user || req.userNickname) : req.userNickname;
+    const userKey = safeUserKey(targetUser);
     // 为节省免费额度，云端备份剔除超大体积的 base64 视频/图片二进制，仅保留全部文本对话与设定
     const rawConvs = Array.isArray(req.body?.convs) ? req.body.convs : [];
     const slimConvs = rawConvs.slice(0, 100).map((c) => ({
@@ -587,26 +649,43 @@ app.post('/api/chat', auth, async (req, res) => {
   try {
     const { model } = req.body;
     const lastUserPart = [...(req.body.contents || [])].reverse().find((c) => c.role === 'user')?.parts?.find((p) => p.text)?.text || '';
+    const location = resolveLocation(model, req.body.location);
+    const config = { ...buildConfig(req.body), abortSignal: abort.signal };
+    const cleaned = cleanContents(req.body.contents);
+
+    let usage = null, grounding = null, finishReason = null, emitted = false, lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const stream = await client(location).models.generateContentStream({
+          model, contents: cleaned, config,
+        });
+        for await (const chunk of stream) {
+          const cand = chunk.candidates?.[0];
+          for (const p of cand?.content?.parts || []) { emitted = true; send('part', p); }
+          if (cand?.groundingMetadata) grounding = cand.groundingMetadata;
+          if (cand?.finishReason) finishReason = cand.finishReason;
+          if (chunk.usageMetadata) usage = chunk.usageMetadata;
+          if (chunk.promptFeedback?.blockReason) send('error', { message: '请求被安全策略拦截：' + chunk.promptFeedback.blockReason });
+        }
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err?.message || err);
+        if (!emitted && !abort.signal.aborted && attempt < 2 && /socket disconnected|ECONNRESET|ETIMEDOUT|socket hang up|oauth2|fetch failed/i.test(msg)) {
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (lastErr) throw lastErr;
+    send('done', { usage, grounding, finishReason });
     recordUserActivity(req.userNickname, {
       type: req.body.kind === 'image' ? 'image' : 'chat',
       model,
       preview: lastUserPart,
     });
-    const location = resolveLocation(model, req.body.location);
-    const config = { ...buildConfig(req.body), abortSignal: abort.signal };
-    const stream = await client(location).models.generateContentStream({
-      model, contents: cleanContents(req.body.contents), config,
-    });
-    let usage = null, grounding = null, finishReason = null;
-    for await (const chunk of stream) {
-      const cand = chunk.candidates?.[0];
-      for (const p of cand?.content?.parts || []) send('part', p);
-      if (cand?.groundingMetadata) grounding = cand.groundingMetadata;
-      if (cand?.finishReason) finishReason = cand.finishReason;
-      if (chunk.usageMetadata) usage = chunk.usageMetadata;
-      if (chunk.promptFeedback?.blockReason) send('error', { message: '请求被安全策略拦截：' + chunk.promptFeedback.blockReason });
-    }
-    send('done', { usage, grounding, finishReason });
   } catch (e) {
     if (!abort.signal.aborted) send('error', { message: errMsg(e) });
   } finally {

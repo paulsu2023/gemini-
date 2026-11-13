@@ -70,7 +70,7 @@ const state = {
   presets: LS.get('presets', null) || DEFAULT_PRESETS,
   memories: [], memoryBucket: '', memoryCloudOk: false,
   nickname: LS.get('lastNickname', ''),
-  adminUsers: [], adminPassword: 'brysj', adminInspectHtml: '',
+  isAdmin: false, adminSecret: '', adminUsers: [], adminPassword: '', adminInspectHtml: '',
   // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
   token: '', busy: false, abort: null, attachments: [], needPassword: true,
   needVideoPassword: !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname),
@@ -155,15 +155,20 @@ async function autoExtractMemories(conv) {
 // ---------------- API ----------------
 async function api(path, opts = {}) {
   const nick = encodeURIComponent(state.nickname || state.prefs.memoryUser || 'default');
-  const res = await fetch(path, {
-    ...opts,
-    headers: { 'Content-Type': 'application/json', 'x-access-token': state.token, 'x-user-nickname': nick, ...(opts.headers || {}) },
-  });
+  const headers = { 'Content-Type': 'application/json', 'x-access-token': state.token, 'x-user-nickname': nick, ...(opts.headers || {}) };
+  if (state.adminSecret) headers['x-admin-password'] = state.adminSecret;
+  const res = await fetch(path, { ...opts, headers });
   if (res.status === 401 || res.status === 403) {
     const j = await res.clone().json().catch(() => ({}));
     if (j.needVideoPassword) {
       state.videoPassword = '';
       throw new Error(j.error || '视频解锁密码错误，线上环境禁止生成视频');
+    }
+    if (j.needAdminPassword) {
+      state.isAdmin = false;
+      state.adminSecret = '';
+      updateAdminUI();
+      throw new Error(j.error || '仅管理员可访问');
     }
     showLogin(j.error || '请先输入昵称与访问密码登录');
     throw new Error(j.error || '需要登录');
@@ -850,21 +855,53 @@ async function loadAdminUsers() {
   }
 }
 
-function openSettings(tab = 'prompts') {
+function updateAdminUI() {
+  const btn = $('#openAdmin');
+  const tab = $('#settingsTabs [data-tab="admin"]');
+  if (btn) btn.style.display = state.isAdmin ? '' : 'none';
+  if (tab) tab.style.display = state.isAdmin ? '' : 'none';
+}
+
+async function ensureAdminAccess() {
+  if (state.isAdmin) return true;
+  const pwd = window.prompt('🛡 仅限管理员访问，请输入管理员口令：');
+  if (!pwd || !pwd.trim()) return false;
+  try {
+    const r = await apiJSON('/api/admin/unlock', { password: pwd.trim() });
+    if (r.isAdmin) {
+      state.isAdmin = true;
+      state.adminSecret = pwd.trim();
+      state.videoPassword = pwd.trim();
+      updateAdminUI();
+      toast('🛡 管理员权限已解锁');
+      return true;
+    }
+  } catch (e) {
+    toast('🚫 ' + (e.message || '管理员密码错误'));
+  }
+  return false;
+}
+
+async function openSettings(tab = 'prompts') {
+  if (tab === 'admin') {
+    const ok = await ensureAdminAccess();
+    if (!ok) return;
+  }
   settingsTab = tab;
   renderSettings();
   $('#settingsDialog').showModal();
   if (tab === 'admin') loadAdminUsers();
 }
 function renderSettings() {
+  updateAdminUI();
   $$('#settingsTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === settingsTab));
   const body = $('#settingsBody');
   if (settingsTab === 'memory') {
     const user = state.prefs.memoryUser || state.nickname || 'default';
     body.innerHTML = `<div class="mem-bar">
       <span>👤 记忆空间（昵称）：</span>
-      <input id="memUserInput" value="${esc(user)}" placeholder="如 小明 或朋友昵称" title="不同昵称的记忆彼此独立，线上和朋友共用网址也不会串记忆">
-      <button type="button" class="btn" id="memSwitchUser">切换/拉取</button>
+      <input id="memUserInput" value="${esc(user)}" ${state.isAdmin ? '' : 'readonly'} placeholder="如 小明 或朋友昵称" title="${state.isAdmin ? '不同昵称的记忆彼此独立' : '已按你的登录昵称自动隔离'}">
+      ${state.isAdmin ? '<button type="button" class="btn" id="memSwitchUser">切换/拉取</button>' : ''}
       <button type="button" class="btn" id="memExtractNow">✨ 从当前对话提炼</button>
       <span class="mem-status">${state.memoryCloudOk ? `☁ Google 免费云已连接 (${esc(state.memoryBucket)})` : '💾 本地存储已就绪'}</span>
     </div>
@@ -944,9 +981,10 @@ function renderSettings() {
       <p>模型列表在服务端 <code>models.js</code> 中维护；也可以在顶部模型菜单底部添加任意 Vertex 模型 ID 尝鲜。</p></div>`;
   }
 }
-$('#settingsTabs').addEventListener('click', (e) => {
+$('#settingsTabs').addEventListener('click', async (e) => {
   const t = e.target.closest('[data-tab]');
   if (t) {
+    if (t.dataset.tab === 'admin' && !(await ensureAdminAccess())) return;
     settingsTab = t.dataset.tab;
     renderSettings();
     if (settingsTab === 'admin') loadAdminUsers();
@@ -1165,10 +1203,16 @@ $('#loginForm').addEventListener('submit', async (e) => {
   if (!res.ok) { $('#loginErr').textContent = j.error || '登录失败'; return; }
   state.token = j.token;
   state.nickname = j.nickname;
+  if (j.isAdmin) {
+    state.isAdmin = true;
+    state.adminSecret = password;
+    state.videoPassword = password;
+  }
   LS.set('lastNickname', j.nickname);
   state.prefs.memoryUser = j.nickname;
   LS.set('prefs', state.prefs);
   updateUserBadge();
+  updateAdminUI();
   $('#loginDialog').close();
   await loadMemories();
   if (location.pathname === '/admin' || location.hash === '#admin' || new URLSearchParams(location.search).get('admin') === '1') {
@@ -1187,10 +1231,12 @@ if (LS.get('panelClosed', innerWidth < 1100)) $('#panel').classList.add('closed'
 try {
   const cfg = await (await fetch('/api/config')).json();
   state.models = cfg.models; state.needPassword = !!cfg.needPassword; state.project = cfg.project; state.memoryBucket = cfg.memoryBucket || '';
+  state.isAdmin = !!cfg.isAdmin;
   if (cfg.needVideoPassword !== undefined) state.needVideoPassword = !!cfg.needVideoPassword;
   if (!allModels().some((m) => m.id === state.prefs.defaultModel)) state.prefs.defaultModel = state.models[0]?.id;
 } catch { toast('无法连接服务端'); }
 updateUserBadge();
+updateAdminUI();
 state.convs = (await dbAll()).sort((a, b) => b.updatedAt - a.updatedAt);
 openConv(newDraft(state.prefs.defaultModel));
 if (state.needPassword) {
