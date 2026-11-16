@@ -25,8 +25,8 @@ echo ========================================================
 echo.
 
 if exist "C:\Program Files (x86)\cloudflared\cloudflared.exe" (
-    "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:3000 --no-autoupdate
+    "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --protocol http2 --url http://localhost:3000 --no-autoupdate
 ) else (
-    cloudflared tunnel --url http://localhost:3000 --no-autoupdate
+    cloudflared tunnel --protocol http2 --url http://localhost:3000 --no-autoupdate
 )
 pause
