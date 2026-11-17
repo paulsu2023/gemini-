@@ -72,10 +72,11 @@ const state = {
   nickname: LS.get('lastNickname', ''),
   isAdmin: false, adminSecret: '', adminUsers: [], adminPassword: '', adminInspectHtml: '',
   // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
-  token: '', busy: false, abort: null, attachments: [], needPassword: true,
+  token: '', tasks: new Map(), attachments: [], needPassword: true,
   needVideoPassword: !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname),
   videoPassword: '',
 };
+const isBusy = (cid = state.conv?.id) => !!(cid && state.tasks.has(cid));
 const allModels = () => [...state.models, ...state.custom];
 const modelInfo = (id) => allModels().find((m) => m.id === id) || { id, name: id, kind: 'chat', location: 'global' };
 
@@ -264,12 +265,25 @@ async function saveConv(c = state.conv) {
   }, 1500);
 }
 function openConv(c) {
-  if (state.busy) stopGen();
+  // 支持多窗口/多对话并行生成：切换或新建对话时不中断原对话的生成任务
   state.conv = c;
   state.attachments = [];
   renderAll();
-  // 恢复未完成的视频任务
-  c.messages.forEach((m) => { if (m.meta?.job && !m.meta.job.done) pollVideo(c, m); });
+  // 仅当该对话尚未在后台轮询时，恢复未完成的视频任务
+  if (!isBusy(c.id)) {
+    c.messages.forEach((m) => {
+      if (m.meta?.job && !m.meta.job.done) {
+        const abort = new AbortController();
+        state.tasks.set(c.id, { abort, msgId: m.id });
+        renderConvList(); renderComposer();
+        pollVideo(c, m, abort).finally(() => {
+          state.tasks.delete(c.id);
+          renderConvList();
+          if (state.conv === c) renderComposer();
+        });
+      }
+    });
+  }
   closeSidebarMobile();
 }
 function renderAll() {
@@ -287,8 +301,9 @@ function renderConvList() {
   for (const c of list) {
     const g = groupOf(c.updatedAt);
     if (g !== last) { html += `<div class="conv-group">${g}</div>`; last = g; }
+    const running = isBusy(c.id);
     html += `<div class="conv-item ${state.conv?.id === c.id ? 'active' : ''}" data-id="${c.id}" role="button" tabindex="0">
-      <span class="kind-dot ${modelInfo(c.model).kind}"></span><span class="t">${esc(c.title)}</span>
+      <span class="kind-dot ${modelInfo(c.model).kind}"></span><span class="t">${esc(c.title)}</span>${running ? '<span class="busy-dot" title="正在后台生成中"></span>' : ''}
       <span class="ops"><button data-op="rename" title="重命名">✎</button><button data-op="del" title="删除">🗑</button></span></div>`;
   }
   $('#convList').innerHTML = html || '<div class="conv-group">还没有对话</div>';
@@ -299,6 +314,7 @@ $('#convList').addEventListener('click', async (e) => {
   const op = e.target.closest('button')?.dataset.op;
   if (op === 'del') {
     if (!confirm(`删除对话「${c.title}」？`)) return;
+    stopGen(c.id);
     await dbDel(c.id); state.convs = state.convs.filter((x) => x.id !== c.id);
     if (state.conv?.id === c.id) openConv(newDraft()); else renderConvList();
   } else if (op === 'rename') {
@@ -486,18 +502,19 @@ $('#thread').addEventListener('click', async (e) => {
     state.attachments.push({ id: uid(), name: `生成图-${state.attachments.length + 1}.png`, mimeType: p.inlineData.mimeType, data: p.inlineData.data });
     renderAttachments(); toast('已加入附件，可继续改图或用作视频首帧'); return;
   }
-  const act = e.target.closest('[data-act]')?.dataset.act; if (!act || state.busy) return;
-  if (act === 'copy') copyText(m.parts.filter((p) => p.text && !p.thought).map((p) => p.text).join('\n'));
+  const act = e.target.closest('[data-act]')?.dataset.act; if (!act) return;
+  if (act === 'copy') { copyText(m.parts.filter((p) => p.text && !p.thought).map((p) => p.text).join('\n')); return; }
   if (act === 'remember') {
     const raw = m.parts.filter((p) => p.text && !p.thought).map((p) => p.text).join(' ').replace(/\s+/g, ' ').trim();
     const val = prompt('编辑要存入长期记忆的内容：', raw.slice(0, 160));
     if (val?.trim()) addMemoryItem(val.trim());
     return;
   }
+  if (isBusy(conv.id)) return;
   if (act === 'delete') { conv.messages.splice(i, 1); msgEl.remove(); conv.messages.length ? saveConv() : (await dbDel(conv.id), state.convs = state.convs.filter((c) => c.id !== conv.id), renderAll()); }
   if (act === 'regen') {
     conv.messages.splice(i);
-    renderThread(); runModel();
+    renderThread(); runModel(conv);
   }
   if (act === 'edit') {
     const text = m.parts.filter((p) => p.text).map((p) => p.text).join('\n');
@@ -509,7 +526,7 @@ $('#thread').addEventListener('click', async (e) => {
       if (b.dataset.e === 'cancel') return fillMsg(msgEl, m);
       m.parts = m.parts.filter((p) => !p.text).concat(ta.value.trim() ? [{ text: ta.value.trim() }] : []);
       conv.messages.splice(i + 1);
-      renderThread(); runModel();
+      renderThread(); runModel(conv);
     };
   }
 });
@@ -542,8 +559,9 @@ function renderComposer() {
   if (state.conv.systemInstruction && (kind === 'chat' || kind === 'image')) hints.push('✓ 前置提示词');
   if (memCount && (kind === 'chat' || kind === 'image')) hints.push(`🧠 记忆 ${memCount} 条`);
   $('#composerHint').textContent = hints.join(' · ');
-  $('#sendBtn').classList.toggle('stop', state.busy);
-  $('#sendBtn').textContent = state.busy ? '' : '↑';
+  const busy = isBusy();
+  $('#sendBtn').classList.toggle('stop', busy);
+  $('#sendBtn').textContent = busy ? '' : '↑';
 }
 $('#quickChips').addEventListener('click', (e) => {
   const c = e.target.closest('[data-chip]');
@@ -584,14 +602,14 @@ const composer = $('#composer');
 ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); composer.classList.add('drag'); }));
 ['dragleave', 'drop'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) composer.classList.remove('drag'); }));
 document.addEventListener('drop', (e) => { if (e.dataTransfer?.files?.length) addFiles([...e.dataTransfer.files]); });
-$('#sendBtn').onclick = () => state.busy ? stopGen() : send();
+$('#sendBtn').onclick = () => isBusy() ? stopGen() : send();
 
 // ---------------- 发送与生成 ----------------
 async function send() {
-  if (state.busy) return;
+  const conv = state.conv;
+  if (isBusy(conv.id)) return;
   const text = input.value.trim();
   if (!text && !state.attachments.length) return;
-  const conv = state.conv;
   const parts = state.attachments.map((a) => ({ inlineData: { mimeType: a.mimeType, data: a.data }, fileName: a.name }));
   if (text) parts.push({ text });
   conv.messages.push({ id: uid(), role: 'user', parts, ts: Date.now() });
@@ -604,7 +622,7 @@ async function send() {
   LS.set('lastModel.' + modelInfo(conv.model).kind, conv.model);
   await saveConv(conv);
   renderHeader();
-  runModel();
+  runModel(conv);
 }
 
 // 组装多轮上下文：模型生成的视频/音频不回传给对话模型
@@ -627,42 +645,52 @@ function mergePart(parts, p) {
   } else parts.push({ ...p });
 }
 
-function stopGen() { state.abort?.abort(); }
+function stopGen(cid = state.conv?.id) { state.tasks.get(cid)?.abort?.abort(); }
 
-async function runModel() {
-  const conv = state.conv;
+async function runModel(conv = state.conv) {
+  if (isBusy(conv.id)) return;
   const info = modelInfo(conv.model);
   const history = conv.messages.slice();
   const msg = { id: uid(), role: 'model', parts: [], meta: { model: conv.model, loading: true }, ts: Date.now() };
   conv.messages.push(msg);
-  $('#thread').appendChild(renderMsg(msg));
-  scrollBottom(true);
-  state.busy = true; state.abort = new AbortController(); renderComposer();
+  if (state.conv === conv) {
+    $('#thread').appendChild(renderMsg(msg));
+    scrollBottom(true);
+  }
+  const abort = new AbortController();
+  state.tasks.set(conv.id, { abort, msgId: msg.id });
+  renderConvList();
+  if (state.conv === conv) renderComposer();
   const t0 = Date.now();
   try {
-    if (info.kind === 'chat' || info.kind === 'image') await runStream(conv, info, history, msg);
-    else if (info.kind === 'tts') await runTTS(conv, info, history, msg);
-    else if (info.kind === 'video') await runVideo(conv, info, history, msg);
+    if (info.kind === 'chat' || info.kind === 'image') await runStream(conv, info, history, msg, abort);
+    else if (info.kind === 'tts') await runTTS(conv, info, history, msg, abort);
+    else if (info.kind === 'video') await runVideo(conv, info, history, msg, abort);
   } catch (e) {
     if (e.name === 'AbortError') { if (!msg.parts.length) msg.meta.error = '已停止生成'; }
     else msg.meta.error = e.message;
   }
   msg.meta.loading = false;
   msg.meta.seconds = ((Date.now() - t0) / 1000).toFixed(1);
-  state.busy = false; state.abort = null;
-  updateMsg(msg); renderComposer();
+  state.tasks.delete(conv.id);
+  renderConvList();
+  if (state.conv === conv) {
+    updateMsg(msg); renderComposer();
+  } else {
+    toast(`${msg.meta.error ? '⚠' : '✅'} 「${conv.title}」${msg.meta.error ? '生成出错' : '已在后台生成完毕'}`);
+  }
   if (conv.messages.includes(msg)) {
     await saveConv(conv);
     if (info.kind === 'chat' && !msg.meta.error) autoExtractMemories(conv);
   }
 }
 
-async function runStream(conv, info, history, msg) {
+async function runStream(conv, info, history, msg, abort) {
   const s = conv.settings;
   const settings = { ...s, stopSequences: s.stopSequences ? s.stopSequences.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean) : [] };
   if (info.kind === 'image') Object.assign(settings, { includeThoughts: s.includeThoughts, thinkingLevel: 'auto', codeExecution: false, urlContext: false, jsonMode: false });
   const res = await api('/api/chat', {
-    method: 'POST', signal: state.abort.signal,
+    method: 'POST', signal: abort.signal,
     body: JSON.stringify({ model: conv.model, location: info.location, kind: info.kind, contents: buildContents(history), systemInstruction: composeSystemInstruction(conv.systemInstruction), settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `请求失败 (${res.status})`);
@@ -684,21 +712,22 @@ async function runStream(conv, info, history, msg) {
         if (data.finishReason && !['STOP', 'MAX_TOKENS'].includes(data.finishReason) && !msg.parts.some((p) => !p.thought)) msg.meta.error = `模型未返回内容（${data.finishReason}）`;
         if (data.finishReason === 'MAX_TOKENS') msg.meta.error = '已达到最大输出长度，回答被截断';
       } else if (ev === 'error') msg.meta.error = data.message;
-      scheduleUpdate(msg);
+      if (state.conv === conv) scheduleUpdate(msg);
     }
   }
 }
 
-async function runTTS(conv, info, history, msg) {
+async function runTTS(conv, info, history, msg, abort) {
   const last = history.at(-1);
   const text = last.parts.filter((p) => p.text).map((p) => p.text).join('\n');
   if (!text) throw new Error('请输入要朗读的文字');
   const r = await apiJSON('/api/tts', { model: conv.model, location: info.location, text, voice: conv.settings.voice, style: conv.settings.ttsStyle });
+  if (abort?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   msg.parts.push({ inlineData: { mimeType: r.mimeType, data: r.data } });
   msg.meta.usage = r.usage;
 }
 
-async function runVideo(conv, info, history, msg) {
+async function runVideo(conv, info, history, msg, abort) {
   const last = history.at(-1);
   const promptText = last.parts.filter((p) => p.text).map((p) => p.text).join('\n');
   const imgs = last.parts.filter((p) => p.inlineData?.mimeType.startsWith('image/')).map((p) => p.inlineData);
@@ -716,15 +745,15 @@ async function runVideo(conv, info, history, msg) {
   });
   msg.meta.job = { id: r.id, done: false, elapsed: 0 };
   await saveConv(conv);
-  await pollVideo(conv, msg);
+  await pollVideo(conv, msg, abort);
 }
-async function pollVideo(conv, msg) {
+async function pollVideo(conv, msg, abort) {
   const job = msg.meta.job;
   msg.meta.loading = true;
   if (state.conv === conv) updateMsg(msg);
   while (!job.done) {
     await new Promise((r) => setTimeout(r, 6000));
-    if (state.abort?.signal.aborted) { msg.meta.error = '已停止等待（服务端任务仍会继续并计费）'; job.done = true; break; }
+    if (abort?.signal?.aborted) { msg.meta.error = '已停止等待（服务端任务仍会继续并计费）'; job.done = true; break; }
     try {
       const r = await apiJSON('/api/video/' + job.id);
       if (!r.done) { job.elapsed = r.elapsed; if (state.conv === conv) updateMsg(msg); continue; }
