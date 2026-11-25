@@ -901,8 +901,11 @@ app.post('/api/tts', auth, async (req, res) => {
   const t0 = Date.now();
   try {
     const { model, text, voice = 'Kore', style } = req.body;
+    const cleanStyle = String(style || '').trim();
+    const partIn = cleanStyle ? { text, speechMetadata: { style: cleanStyle } } : { text };
     const r = await client(resolveLocation(model, req.body.location)).models.generateContent({
-      model, contents: style ? `${style}：${text}` : text,
+      model,
+      contents: [{ role: 'user', parts: [partIn] }],
       config: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
     });
     const part = r.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
