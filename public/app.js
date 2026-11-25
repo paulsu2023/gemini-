@@ -1,6 +1,7 @@
 // Gemini 体验 —— 前端主逻辑（原生 JS，无构建步骤）
 // 数据全部存在浏览器 IndexedDB（对话、图片、视频），设置与提示词库存在 localStorage
 import { calcEventCost, formatUnitPrice, USD_TO_CNY, getRate } from '/pricing.js';
+import { TTS_VOICES } from '/voices.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -20,7 +21,7 @@ const EXAMPLES = {
   video: ['航拍镜头缓缓掠过云海之上的雪山日出', '一只柯基在海边沙滩上奔跑，慢动作，夕阳', '雨夜的东京街头，镜头跟随一把红伞前行', '咖啡倒入杯中的特写，奶泡形成拉花'],
   tts: ['大家好，欢迎来到 Gemini 体验，今天我们一起探索 AI 的无限可能。', '从前有座山，山里有座庙，庙里有个老和尚在给小和尚讲故事。'],
 };
-const VOICES = ['Kore', 'Puck', 'Zephyr', 'Charon', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe', 'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi', 'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat'];
+const voiceInfo = (id) => TTS_VOICES.find((v) => v.id === id) || TTS_VOICES[0];
 
 const DEFAULT_SETTINGS = {
   temperature: 1, topP: 0.95, maxOutputTokens: '', thinkingLevel: 'auto', includeThoughts: true,
@@ -73,6 +74,7 @@ const state = {
   nickname: LS.get('lastNickname', ''),
   isAdmin: false, adminSecret: '', adminUsers: [], adminPassword: '', adminInspectHtml: '',
   usageEvents: [], usageSource: 'merged', usageRange: 'all', usageRateMode: 'promo', healthReport: null, healthBusy: false,
+  voiceFilter: 'all', playingVoice: '',
   // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
   token: '', tasks: new Map(), attachments: [], needPassword: true,
   needVideoPassword: !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname),
@@ -372,20 +374,90 @@ function selectModel(id) {
 }
 document.addEventListener('click', () => $('#modelMenu').classList.remove('open'));
 
+// ---------------- 音色试听播放器（复用预生成 MP3 零 Token 秒播） ----------------
+let sampleAudio = null;
+function refreshVoicePlayUI() {
+  $$('[data-vplay]').forEach((b) => {
+    const on = b.dataset.vplay === state.playingVoice;
+    b.classList.toggle('playing', on);
+    b.textContent = on ? '⏹ 停止' : (b.dataset.short ? '▶' : '▶ 试听');
+  });
+}
+function toggleVoiceSample(id) {
+  if (sampleAudio) { sampleAudio.pause(); sampleAudio = null; }
+  if (state.playingVoice === id) {
+    state.playingVoice = '';
+    refreshVoicePlayUI();
+    return;
+  }
+  state.playingVoice = id;
+  refreshVoicePlayUI();
+  const a = new Audio(`/tts-samples/${encodeURIComponent(id)}.mp3`);
+  sampleAudio = a;
+  a.onended = () => { if (state.playingVoice === id) { state.playingVoice = ''; refreshVoicePlayUI(); } };
+  a.onerror = () => { if (state.playingVoice === id) { state.playingVoice = ''; refreshVoicePlayUI(); toast('试听音频加载失败'); } };
+  a.play().catch(() => { state.playingVoice = ''; refreshVoicePlayUI(); });
+}
+
 // ---------------- 欢迎页 ----------------
 function renderWelcome() {
   const w = $('#welcome');
   if (state.conv.messages.length) { w.classList.add('hidden'); return; }
   w.classList.remove('hidden');
   const kind = modelInfo(state.conv.model).kind;
+  w.classList.toggle('tts-mode', kind === 'tts');
   const h = new Date().getHours();
   const hi = h < 6 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+  let extra = '';
+  if (kind === 'tts') {
+    const f = state.voiceFilter || 'all';
+    const list = f === 'all' ? TTS_VOICES : TTS_VOICES.filter((v) => v.gender === f);
+    const curV = state.conv.settings.voice;
+    extra = `<div class="voice-showcase">
+      <div class="voice-head">
+        <h3>🎙 官方 30 位 AI 声音角色（点击试听案例 · 点击卡片选用）</h3>
+        <div class="voice-filter">
+          <button type="button" data-vfilter="all" class="${f === 'all' ? 'on' : ''}">全部 (${TTS_VOICES.length})</button>
+          <button type="button" data-vfilter="女" class="${f === '女' ? 'on' : ''}">♀ 女声 (${TTS_VOICES.filter((x) => x.gender === '女').length})</button>
+          <button type="button" data-vfilter="男" class="${f === '男' ? 'on' : ''}">♂ 男声 (${TTS_VOICES.filter((x) => x.gender === '男').length})</button>
+        </div>
+      </div>
+      <div class="voice-grid">
+        ${list.map((v) => {
+          const playing = state.playingVoice === v.id;
+          return `<div class="voice-card ${curV === v.id ? 'on' : ''}" data-vpick="${v.id}" role="button" tabindex="0">
+            <div class="voice-top">
+              <b>${esc(v.id)}</b>
+              <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender === '女' ? '♀ 女' : '♂ 男'}</span>
+              <span class="vpitch">${esc(v.pitch)}音</span>
+              <button type="button" class="vplay ${playing ? 'playing' : ''}" data-vplay="${v.id}">${playing ? '⏹ 停止' : '▶ 试听'}</button>
+            </div>
+            <div class="voice-trait">${esc(v.trait)} · <small style="color:var(--ink-3);font-weight:400">${esc(v.useCase)}</small></div>
+            <div class="voice-sample" title="${esc(v.sample)}">「${esc(v.sample)}」</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
   w.innerHTML = `<h1>${hi}，<br>今天想用 <em>Gemini</em> 做点什么？</h1>
     <p class="sub">对话、画图、做视频、合成语音 —— 选一种开始，随时在顶部切换模型。</p>
     <div class="mode-cards">${Object.entries(KINDS).map(([k, v]) => `<button class="mode-card ${k === kind ? 'active' : ''}" data-kind="${k}" style="--k:var(--${k})"><div class="ic">${v.icon}</div><b>${v.label}</b><small>${v.desc}</small></button>`).join('')}</div>
-    <div class="examples">${(EXAMPLES[kind] || []).map((t) => `<button>${esc(t)}</button>`).join('')}</div>`;
+    <div class="examples">${(EXAMPLES[kind] || []).map((t) => `<button>${esc(t)}</button>`).join('')}</div>${extra}`;
 }
 $('#welcome').addEventListener('click', (e) => {
+  const playBtn = e.target.closest('[data-vplay]');
+  if (playBtn) { e.stopPropagation(); toggleVoiceSample(playBtn.dataset.vplay); return; }
+  const fltBtn = e.target.closest('[data-vfilter]');
+  if (fltBtn) { state.voiceFilter = fltBtn.dataset.vfilter; renderWelcome(); renderPanel(); return; }
+  const pickCard = e.target.closest('[data-vpick]');
+  if (pickCard) {
+    const v = voiceInfo(pickCard.dataset.vpick);
+    state.conv.settings.voice = v.id;
+    renderWelcome(); renderPanel(); renderComposer();
+    if (!state.conv.draft) saveConv();
+    toast(`🎙 已选用音色：${v.id}（${v.gender} · ${v.trait}）`);
+    return;
+  }
   const card = e.target.closest('.mode-card');
   if (card) {
     const k = card.dataset.kind;
@@ -554,7 +626,11 @@ function renderComposer() {
   let html = chips.map(([k, l]) => `<button class="chip ${s[k] ? 'on' : ''}" data-chip="${k}">${l}</button>`).join('');
   if (kind === 'image') html += `<button class="chip" data-open-panel>比例 ${s.aspectRatio === 'auto' ? '自动' : s.aspectRatio} · ${s.imageSize === 'auto' ? '默认尺寸' : s.imageSize}</button>`;
   if (kind === 'video') html += `<button class="chip" data-open-panel>${s.vAspect} · ${s.vDuration}秒 · ${s.vResolution}</button>`;
-  if (kind === 'tts') html += `<button class="chip" data-open-panel>音色 ${s.voice}</button>`;
+  if (kind === 'tts') {
+    const v = voiceInfo(s.voice);
+    html += `<button class="chip" data-open-panel>🔊 ${esc(v.id)}（${v.gender}·${esc(v.trait)}）</button>`;
+    html += `<button class="chip ${state.playingVoice === v.id ? 'on' : ''}" data-vplay="${esc(v.id)}">${state.playingVoice === v.id ? '⏹ 停止试听' : '▶ 试听音色'}</button>`;
+  }
   $('#quickChips').innerHTML = html;
   const memCount = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false).length : 0;
   const hints = [];
@@ -566,6 +642,8 @@ function renderComposer() {
   $('#sendBtn').textContent = busy ? '' : '↑';
 }
 $('#quickChips').addEventListener('click', (e) => {
+  const vp = e.target.closest('[data-vplay]');
+  if (vp) { toggleVoiceSample(vp.dataset.vplay); renderComposer(); return; }
   const c = e.target.closest('[data-chip]');
   if (c) { const k = c.dataset.chip; state.conv.settings[k] = !state.conv.settings[k]; renderComposer(); renderPanel(); if (!state.conv.draft) saveConv(); }
   if (e.target.closest('[data-open-panel]')) $('#panel').classList.remove('closed');
@@ -823,8 +901,32 @@ function renderPanel() {
     html += `<p class="hint">${isOmni ? 'Gemini Omni 走 Vertex AI Interactions 通道（global），支持最高 15 秒音画同步及参考图生视频。' : 'Veo 3.1 上传 1 张图作为首帧（图生视频），2 张图则为首帧 + 尾帧。'}视频生成通常需要 30~120 秒。</p>`;
   }
   if (kind === 'tts') {
-    html += `<div class="field"><label>音色</label><select data-k="voice">${VOICES.map((v) => `<option ${s.voice === v ? 'selected' : ''}>${v}</option>`).join('')}</select></div>`;
-    html += `<div class="field"><label>语气风格<small>可选</small></label><input type="text" data-k="ttsStyle" value="${esc(s.ttsStyle)}" placeholder="如：用温柔开心的语气说"></div>`;
+    const curV = voiceInfo(s.voice);
+    const f = state.voiceFilter || 'all';
+    const list = f === 'all' ? TTS_VOICES : TTS_VOICES.filter((v) => v.gender === f);
+    const playingCur = state.playingVoice === curV.id;
+    html += `<div class="field"><label>当前角色音色<small>${curV.gender === '女' ? '♀ 女声' : '♂ 男声'} · ${esc(curV.pitch)}音</small></label>
+      <div class="voice-panel-cur">
+        <div class="voice-top"><b>${esc(curV.id)}</b><span class="vsex ${curV.gender === '女' ? 'f' : 'm'}">${curV.gender === '女' ? '♀ 女' : '♂ 男'}</span><span class="vpitch">${esc(curV.pitch)}音</span>
+          <button type="button" class="vplay ${playingCur ? 'playing' : ''}" data-vplay="${esc(curV.id)}">${playingCur ? '⏹ 停止' : '▶ 试听'}</button></div>
+        <div class="voice-trait" style="margin-top:4px">${esc(curV.trait)} · <small style="color:var(--ink-3);font-weight:400">${esc(curV.useCase)}</small></div>
+        <div class="voice-sample" style="margin-top:4px">「${esc(curV.sample)}」</div>
+      </div>
+      <div class="voice-filter" style="margin-bottom:8px">
+        <button type="button" data-vfilter="all" class="${f === 'all' ? 'on' : ''}">全部 (${TTS_VOICES.length})</button>
+        <button type="button" data-vfilter="女" class="${f === '女' ? 'on' : ''}">♀ 女声 (${TTS_VOICES.filter((x) => x.gender === '女').length})</button>
+        <button type="button" data-vfilter="男" class="${f === '男' ? 'on' : ''}">♂ 男声 (${TTS_VOICES.filter((x) => x.gender === '男').length})</button>
+      </div>
+      <div class="voice-panel-list">${list.map((v) => {
+        const pl = state.playingVoice === v.id;
+        return `<div class="voice-row ${v.id === curV.id ? 'on' : ''}" data-vpick="${v.id}" role="button" tabindex="0">
+          <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender}</span>
+          <div class="vinfo"><b>${esc(v.id)}</b><small>${esc(v.trait)} · ${esc(v.pitch)}音 · ${esc(v.useCase)}</small></div>
+          <button type="button" class="vplay ${pl ? 'playing' : ''}" data-vplay="${v.id}" data-short="1" title="试听">${pl ? '⏹' : '▶'}</button>
+        </div>`;
+      }).join('')}</div></div>`;
+    html += `<div class="field"><label>语气风格<small>可选</small></label><input type="text" data-k="ttsStyle" value="${esc(s.ttsStyle)}" placeholder="如：用温柔开心的语气说">
+      <div class="chips" style="margin-top:6px">${['温柔舒缓', '热情开心', '专业新闻播报', '悬疑低语讲故事', '活泼俏皮'].map((st) => `<button type="button" class="chip" data-tts-style="${st}">${st}</button>`).join('')}</div></div>`;
   }
   html += `<div class="sec-title">默认值</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="saveDefaults">设为新对话默认</button><button type="button" class="btn" id="resetSettings">恢复出厂</button></div>`;
   $('#panelBody').innerHTML = html;
@@ -852,6 +954,25 @@ $('#panelBody').addEventListener('change', (e) => {
 });
 $('#panelBody').addEventListener('click', (e) => {
   const c = state.conv;
+  const vp = e.target.closest('[data-vplay]');
+  if (vp) { e.stopPropagation(); toggleVoiceSample(vp.dataset.vplay); return; }
+  const vf = e.target.closest('[data-vfilter]');
+  if (vf) { state.voiceFilter = vf.dataset.vfilter; renderPanel(); renderWelcome(); return; }
+  const vpick = e.target.closest('[data-vpick]');
+  if (vpick) {
+    const v = voiceInfo(vpick.dataset.vpick);
+    c.settings.voice = v.id;
+    renderPanel(); renderComposer(); renderWelcome();
+    if (!c.draft) saveConv();
+    toast(`🎙 已选用：${v.id}（${v.gender} · ${v.trait}）`);
+    return;
+  }
+  const ts = e.target.closest('[data-tts-style]');
+  if (ts) {
+    c.settings.ttsStyle = `用${ts.dataset.ttsStyle}的语气说`;
+    renderPanel(); if (!c.draft) saveConv();
+    return;
+  }
   const sg = e.target.closest('[data-seg]');
   if (sg) {
     const k = sg.dataset.seg; const v = sg.dataset.v;

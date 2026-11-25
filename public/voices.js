@@ -1,0 +1,36 @@
+// Google Gemini / Vertex AI 官方 30 种预设音色目录（含性别、音高、官方音色特征与试听台词）
+export const TTS_VOICES = [
+  // —— 女声（14 种）——
+  { id: 'Kore', gender: '女', pitch: '中', trait: '坚定清晰', useCase: '教学讲解 · 职场助手', sample: '你好，我是Kore，声音清晰坚定，适合专业讲解与工作助手。' },
+  { id: 'Zephyr', gender: '女', pitch: '偏高', trait: '明亮轻快', useCase: '轻松科普 · 清新旁白', sample: '嗨，我是Zephyr，像微风一样明亮轻快，听起来很有精神。' },
+  { id: 'Aoede', gender: '女', pitch: '中', trait: '舒朗松弛', useCase: '故事讲述 · 有声伴读', sample: '你好呀，我是Aoede，语调自然舒朗，适合慢慢讲个好故事。' },
+  { id: 'Leda', gender: '女', pitch: '偏高', trait: '青春柔和', useCase: '温柔陪聊 · 情感互动', sample: '你好，我是Leda，带着青春与温暖的声线，陪你聊聊今天。' },
+  { id: 'Callirrhoe', gender: '女', pitch: '偏高', trait: '随和甜美', useCase: '日常对话 · 亲切客服', sample: '嗨，我是Callirrhoe，语气随和轻松，沟通就像老朋友一样。' },
+  { id: 'Autonoe', gender: '女', pitch: '中', trait: '开朗明媚', useCase: '生活分享 · 活力播报', sample: '你好，我是Autonoe，声音开朗明媚，希望给你带来好心情。' },
+  { id: 'Despina', gender: '女', pitch: '中', trait: '丝滑知性', useCase: '冥想引导 · 沉静解说', sample: '你好，我是Despina，语流丝滑柔和，适合静静聆听一段文字。' },
+  { id: 'Erinome', gender: '女', pitch: '中', trait: '清脆端庄', useCase: '新闻资讯 · 正式通知', sample: '您好，我是Erinome，吐字清脆利落，适合正式播报与说明。' },
+  { id: 'Laomedeia', gender: '女', pitch: '偏高', trait: '优雅振奋', useCase: '品牌宣传 · 礼仪主持', sample: '你好，我是Laomedeia，清亮优雅的声线，让每一句话更动人。' },
+  { id: 'Achernar', gender: '女', pitch: '偏高', trait: '温润轻柔', useCase: '睡前故事 · 舒缓陪伴', sample: '你好，我是Achernar，声音轻柔舒缓，适合夜晚安安静静地阅读。' },
+  { id: 'Gacrux', gender: '女', pitch: '偏低', trait: '成熟知性', useCase: '纪录片 · 深度评论', sample: '你好，我是Gacrux，沉稳成熟的声线，带给你可靠的质感。' },
+  { id: 'Pulcherrima', gender: '女', pitch: '中高', trait: '明快直率', useCase: '产品推介 · 干脆引导', sample: '嗨，我是Pulcherrima，表达积极直率，重点一句就能说清。' },
+  { id: 'Vindemiatrix', gender: '女', pitch: '偏低', trait: '温婉从容', useCase: '散文朗诵 · 成熟叙事', sample: '您好，我是Vindemiatrix，温柔从容，适合娓娓道来一段往事。' },
+  { id: 'Sulafat', gender: '女', pitch: '偏高', trait: '温暖清甜', useCase: '少儿故事 · 活泼伙伴', sample: '嗨你好，我是Sulafat，声音温暖清甜，今天想听什么呢？' },
+
+  // —— 男声（16 种）——
+  { id: 'Puck', gender: '男', pitch: '中', trait: '元气活泼', useCase: '趣味视频 · 创意互动', sample: '嘿，我是Puck，声音元气又活泼，让对话立刻鲜活起来！' },
+  { id: 'Charon', gender: '男', pitch: '低沉', trait: '厚重专业', useCase: '纪录旁白 · 权威解读', sample: '你好，我是Charon，低沉稳重的资讯男声，适合深度专题旁白。' },
+  { id: 'Fenrir', gender: '男', pitch: '中低', trait: '热情昂扬', useCase: '宣传片 · 激情演讲', sample: '你好！我是Fenrir，充满热情与感染力，一起把气氛点燃吧！' },
+  { id: 'Orus', gender: '男', pitch: '中低', trait: '坚定稳健', useCase: '商务汇报 · 严肃叙事', sample: '您好，我是Orus，沉着坚定的男声，适合严谨的报告与陈述。' },
+  { id: 'Enceladus', gender: '男', pitch: '低沉', trait: '柔和气声', useCase: '深夜电台 · 悬疑独白', sample: '你好，我是Enceladus，带着轻柔气声的低音，适合深夜静听。' },
+  { id: 'Iapetus', gender: '男', pitch: '中低', trait: '清朗干练', useCase: '科技评测 · 知识频道', sample: '你好，我是Iapetus，吐字清晰干练，适合条理分明的科技解说。' },
+  { id: 'Umbriel', gender: '男', pitch: '中低', trait: '松弛随和', useCase: '播客闲聊 · 轻松叙事', sample: '哈喽，我是Umbriel，语气轻松自在，像播客对谈一样舒服。' },
+  { id: 'Algieba', gender: '男', pitch: '低沉', trait: '醇厚流畅', useCase: '人物传记 · 品质画外音', sample: '你好，我是Algieba，声线醇厚流畅，带着一份历练后的沉着。' },
+  { id: 'Algenib', gender: '男', pitch: '低沉', trait: '磁性沙哑', useCase: '电影预告 · 故事主角', sample: '你好，我是Algenib，略带磁性的颗粒感男声，很有画面感。' },
+  { id: 'Rasalgethi', gender: '男', pitch: '中', trait: '博学稳重', useCase: '百科解说 · 课程录制', sample: '你好，我是Rasalgethi，清晰条理的资讯风格，适合知识课程。' },
+  { id: 'Alnilam', gender: '男', pitch: '中低', trait: '自信响亮', useCase: '活动开场 · 号召宣讲', sample: '大家好，我是Alnilam，饱满自信的声音，让核心观点更有力量。' },
+  { id: 'Schedar', gender: '男', pitch: '中低', trait: '平和均匀', useCase: '长文听书 · 导航提示', sample: '你好，我是Schedar，语速平稳均匀，长时间听也不会觉得累。' },
+  { id: 'Achird', gender: '男', pitch: '中低', trait: '温和友善', useCase: '贴心顾问 · 引导陪伴', sample: '你好，我是Achird，语气温和友善，随时为你提供细致解答。' },
+  { id: 'Zubenelgenubi', gender: '男', pitch: '中低', trait: '口语松弛', useCase: '日常vlog · 朋友聊天', sample: '嗨，我是Zubenelgenubi，就像平时聊天一样自然随性。' },
+  { id: 'Sadachbia', gender: '男', pitch: '中', trait: '生动爽朗', useCase: '娱乐解说 · 活力对白', sample: '嘿你好，我是Sadachbia，语调生动爽朗，适合轻松有趣的内容。' },
+  { id: 'Sadaltager', gender: '男', pitch: '中低', trait: '睿智详实', useCase: '财经分析 · 深度课堂', sample: '您好，我是Sadaltager，沉稳博学的声线，擅长梳理复杂逻辑。' },
+];
