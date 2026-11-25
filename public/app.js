@@ -21,7 +21,22 @@ const EXAMPLES = {
   video: ['航拍镜头缓缓掠过云海之上的雪山日出', '一只柯基在海边沙滩上奔跑，慢动作，夕阳', '雨夜的东京街头，镜头跟随一把红伞前行', '咖啡倒入杯中的特写，奶泡形成拉花'],
   tts: ['大家好，欢迎来到 Gemini 体验，今天我们一起探索 AI 的无限可能。', '从前有座山，山里有座庙，庙里有个老和尚在给小和尚讲故事。'],
 };
-const voiceInfo = (id) => TTS_VOICES.find((v) => v.id === id) || TTS_VOICES[0];
+const voiceInfo = (id) => {
+  const core = TTS_VOICES.find((v) => v.id === id);
+  if (core) return { ...core, isCore: true };
+  const ext = (state.extVoices || []).find((v) => v.id === id);
+  if (ext) return {
+    id: ext.id,
+    name: ext.name,
+    gender: ext.gender || '中性',
+    pitch: ext.pitch || '中',
+    trait: `${ext.lang}${ext.accent ? '·' + ext.accent : ''}`,
+    useCase: ext.persona || ext.context || '扩展角色',
+    sample: ext.desc || `${ext.lang} ${ext.persona}`,
+    isCore: false,
+  };
+  return { ...TTS_VOICES[0], isCore: true };
+};
 
 const DEFAULT_SETTINGS = {
   temperature: 1, topP: 0.95, maxOutputTokens: '', thinkingLevel: 'auto', includeThoughts: true,
@@ -74,7 +89,8 @@ const state = {
   nickname: LS.get('lastNickname', ''),
   isAdmin: false, adminSecret: '', adminUsers: [], adminPassword: '', adminInspectHtml: '',
   usageEvents: [], usageSource: 'merged', usageRange: 'all', usageRateMode: 'promo', healthReport: null, healthBusy: false,
-  voiceFilter: 'all', playingVoice: '',
+  voiceFilter: 'all', voiceBank: 'core', voiceLang: 'all', voiceQuery: '', voiceLimit: 36,
+  extVoices: [], extLoaded: false, extLoading: false, playingVoice: '', loadingVoice: '',
   // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
   token: '', tasks: new Map(), attachments: [], needPassword: true,
   needVideoPassword: !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname),
@@ -374,29 +390,103 @@ function selectModel(id) {
 }
 document.addEventListener('click', () => $('#modelMenu').classList.remove('open'));
 
-// ---------------- 音色试听播放器（复用预生成 MP3 零 Token 秒播） ----------------
+// ---------------- 音色库加载与试听播放器（核心 30 MP3 秒播 + 扩展 2,120 音色按需试听并缓存） ----------------
+const CORE_VOICE_IDS = new Set(TTS_VOICES.map((v) => v.id));
+async function ensureExtendedVoices() {
+  if (state.extLoaded || state.extLoading) return;
+  state.extLoading = true;
+  try {
+    const r = await fetch('/tts-extended-voices.json');
+    if (r.ok) {
+      state.extVoices = await r.json();
+      state.extLoaded = true;
+    }
+  } catch {} finally {
+    state.extLoading = false;
+    if (modelInfo(state.conv?.model).kind === 'tts') { renderWelcome(); renderPanel(); }
+  }
+}
+
+const LANG_GROUPS = [
+  ['all', '🌐 全部语言'],
+  ['zh', '🇨🇳 中文 / 粤语 (zh/yue)'],
+  ['en-US', '🇺🇸 美式英语 (en-US)'],
+  ['en-GB', '🇬🇧 英式英语 (en-GB)'],
+  ['en-other', '🌍 澳/加/印等英语'],
+  ['ja-JP', '🇯🇵 日语 (ja-JP)'],
+  ['ko-KR', '🇰🇷 韩语 (ko-KR)'],
+  ['eu', '🇪🇺 德/法/西/意/葡/俄等'],
+  ['other', '🌏 其他全部语种'],
+];
+
+function matchLangGroup(lang = '', group = 'all') {
+  if (group === 'all') return true;
+  if (group === 'zh') return /^(zh|yue)/i.test(lang);
+  if (group === 'en-US') return lang === 'en-US';
+  if (group === 'en-GB') return lang === 'en-GB';
+  if (group === 'en-other') return lang.startsWith('en-') && lang !== 'en-US' && lang !== 'en-GB';
+  if (group === 'ja-JP') return lang === 'ja-JP';
+  if (group === 'ko-KR') return lang === 'ko-KR';
+  if (group === 'eu') return /^(de|fr|es|it|pt|nl|pl|cs|el|ro|ru|uk|tr)-/i.test(lang);
+  return !/^(zh|yue|en|ja|ko|de|fr|es|it|pt|nl|pl|cs|el|ro|ru|uk|tr)-/i.test(lang);
+}
+
+function getFilteredExtVoices() {
+  const q = (state.voiceQuery || '').trim().toLowerCase();
+  return (state.extVoices || []).filter((v) => {
+    if (state.voiceFilter !== 'all' && v.gender !== state.voiceFilter) return false;
+    if (!matchLangGroup(v.lang, state.voiceLang)) return false;
+    if (q) {
+      const hay = `${v.id} ${v.name} ${v.lang} ${v.accent} ${v.persona} ${v.context} ${v.desc}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
 let sampleAudio = null;
 function refreshVoicePlayUI() {
   $$('[data-vplay]').forEach((b) => {
-    const on = b.dataset.vplay === state.playingVoice;
-    b.classList.toggle('playing', on);
-    b.textContent = on ? '⏹ 停止' : (b.dataset.short ? '▶' : '▶ 试听');
+    const id = b.dataset.vplay;
+    const on = id === state.playingVoice;
+    const loading = id === state.loadingVoice;
+    b.classList.toggle('playing', on || loading);
+    b.textContent = loading ? (b.dataset.short ? '…' : '⏳ 加载中')
+      : on ? (b.dataset.short ? '⏹' : '⏹ 停止')
+        : (b.dataset.short ? '▶' : '▶ 试听');
   });
 }
 function toggleVoiceSample(id) {
   if (sampleAudio) { sampleAudio.pause(); sampleAudio = null; }
   if (state.playingVoice === id) {
-    state.playingVoice = '';
+    state.playingVoice = ''; state.loadingVoice = '';
     refreshVoicePlayUI();
     return;
   }
-  state.playingVoice = id;
+  const isCore = CORE_VOICE_IDS.has(id);
+  const src = isCore
+    ? `/tts-samples/${encodeURIComponent(id)}.mp3`
+    : `/api/tts-sample/${encodeURIComponent(id)}${state.token ? `?token=${encodeURIComponent(state.token)}` : ''}`;
+  state.playingVoice = '';
+  state.loadingVoice = isCore ? '' : id;
   refreshVoicePlayUI();
-  const a = new Audio(`/tts-samples/${encodeURIComponent(id)}.mp3`);
+  const a = new Audio(src);
   sampleAudio = a;
-  a.onended = () => { if (state.playingVoice === id) { state.playingVoice = ''; refreshVoicePlayUI(); } };
-  a.onerror = () => { if (state.playingVoice === id) { state.playingVoice = ''; refreshVoicePlayUI(); toast('试听音频加载失败'); } };
-  a.play().catch(() => { state.playingVoice = ''; refreshVoicePlayUI(); });
+  a.oncanplay = () => {
+    if (sampleAudio !== a) return;
+    state.loadingVoice = '';
+    state.playingVoice = id;
+    refreshVoicePlayUI();
+  };
+  a.onplaying = () => { state.loadingVoice = ''; state.playingVoice = id; refreshVoicePlayUI(); };
+  a.onended = () => { if (state.playingVoice === id) { state.playingVoice = ''; state.loadingVoice = ''; refreshVoicePlayUI(); } };
+  a.onerror = () => {
+    if (sampleAudio !== a) return;
+    state.playingVoice = ''; state.loadingVoice = '';
+    refreshVoicePlayUI();
+    toast('试听加载失败（请检查网络或登录后重试）');
+  };
+  a.play().catch(() => { state.playingVoice = ''; state.loadingVoice = ''; refreshVoicePlayUI(); });
 }
 
 // ---------------- 欢迎页 ----------------
@@ -406,23 +496,19 @@ function renderWelcome() {
   w.classList.remove('hidden');
   const kind = modelInfo(state.conv.model).kind;
   w.classList.toggle('tts-mode', kind === 'tts');
+  if (kind === 'tts') ensureExtendedVoices();
   const h = new Date().getHours();
   const hi = h < 6 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
   let extra = '';
   if (kind === 'tts') {
     const f = state.voiceFilter || 'all';
-    const list = f === 'all' ? TTS_VOICES : TTS_VOICES.filter((v) => v.gender === f);
+    const bank = state.voiceBank || 'core';
     const curV = state.conv.settings.voice;
-    extra = `<div class="voice-showcase">
-      <div class="voice-head">
-        <h3>🎙 官方 30 位 AI 声音角色（点击试听案例 · 点击卡片选用）</h3>
-        <div class="voice-filter">
-          <button type="button" data-vfilter="all" class="${f === 'all' ? 'on' : ''}">全部 (${TTS_VOICES.length})</button>
-          <button type="button" data-vfilter="女" class="${f === '女' ? 'on' : ''}">♀ 女声 (${TTS_VOICES.filter((x) => x.gender === '女').length})</button>
-          <button type="button" data-vfilter="男" class="${f === '男' ? 'on' : ''}">♂ 男声 (${TTS_VOICES.filter((x) => x.gender === '男').length})</button>
-        </div>
-      </div>
-      <div class="voice-grid">
+    const extCount = state.extVoices.length || 2120;
+    let bodyHtml = '';
+    if (bank === 'core') {
+      const list = f === 'all' ? TTS_VOICES : TTS_VOICES.filter((v) => v.gender === f);
+      bodyHtml = `<div class="voice-grid">
         ${list.map((v) => {
           const playing = state.playingVoice === v.id;
           return `<div class="voice-card ${curV === v.id ? 'on' : ''}" data-vpick="${v.id}" role="button" tabindex="0">
@@ -436,7 +522,49 @@ function renderWelcome() {
             <div class="voice-sample" title="${esc(v.sample)}">「${esc(v.sample)}」</div>
           </div>`;
         }).join('')}
+      </div>`;
+    } else if (state.extLoading && !state.extLoaded) {
+      bodyHtml = '<p class="hint">正在加载官方 2,120+ 全球扩展声库…</p>';
+    } else {
+      const matched = getFilteredExtVoices();
+      const shown = matched.slice(0, state.voiceLimit || 36);
+      bodyHtml = `<div class="voice-controls">
+        <select id="wExtLang">${LANG_GROUPS.map(([k, l]) => `<option value="${k}" ${state.voiceLang === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <input id="wExtSearch" value="${esc(state.voiceQuery)}" placeholder="搜索口音、职业、地区，如 Mandarin / Shanghai / Doctor…">
+        <span class="hint">匹配 ${matched.length} 个角色（点击 ▶ 实时试听并自动缓存）</span>
       </div>
+      <div class="voice-grid">
+        ${shown.length ? shown.map((v) => {
+          const playing = state.playingVoice === v.id;
+          const loading = state.loadingVoice === v.id;
+          return `<div class="voice-card ${curV === v.id ? 'on' : ''}" data-vpick="${esc(v.id)}" role="button" tabindex="0">
+            <div class="voice-top">
+              <b title="${esc(v.id)}">${esc(v.name)}</b>
+              <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender === '女' ? '♀ 女' : '♂ 男'}</span>
+              <span class="vpitch">${esc(v.lang)}</span>
+              <button type="button" class="vplay ${playing || loading ? 'playing' : ''}" data-vplay="${esc(v.id)}">${loading ? '⏳ 加载中' : playing ? '⏹ 停止' : '▶ 试听'}</button>
+            </div>
+            <div class="voice-trait">${esc(v.accent || v.lang)} · ${esc(v.pitch)}音 · <small style="color:var(--ink-3);font-weight:400">${esc(v.persona || v.context)}</small></div>
+            <div class="voice-sample" title="${esc(v.desc)}">${esc(v.desc || v.id)}</div>
+          </div>`;
+        }).join('') : '<p class="hint">没有匹配的扩展音色，请换个关键词或语种筛选试试。</p>'}
+      </div>
+      ${matched.length > shown.length ? `<div style="text-align:center;margin-top:12px"><button type="button" class="btn" id="wExtMore">展开更多音色（已显示 ${shown.length} / ${matched.length}）</button></div>` : ''}`;
+    }
+
+    extra = `<div class="voice-showcase">
+      <div class="voice-head">
+        <div class="voice-filter">
+          <button type="button" data-vbank="core" class="${bank === 'core' ? 'on' : ''}">🌟 核心中文精选 (${TTS_VOICES.length})</button>
+          <button type="button" data-vbank="ext" class="${bank === 'ext' ? 'on' : ''}">🌐 官方全球扩展库 (${extCount})</button>
+        </div>
+        <div class="voice-filter">
+          <button type="button" data-vfilter="all" class="${f === 'all' ? 'on' : ''}">全部</button>
+          <button type="button" data-vfilter="女" class="${f === '女' ? 'on' : ''}">♀ 女声</button>
+          <button type="button" data-vfilter="男" class="${f === '男' ? 'on' : ''}">♂ 男声</button>
+        </div>
+      </div>
+      ${bodyHtml}
     </div>`;
   }
   w.innerHTML = `<h1>${hi}，<br>今天想用 <em>Gemini</em> 做点什么？</h1>
@@ -447,15 +575,18 @@ function renderWelcome() {
 $('#welcome').addEventListener('click', (e) => {
   const playBtn = e.target.closest('[data-vplay]');
   if (playBtn) { e.stopPropagation(); toggleVoiceSample(playBtn.dataset.vplay); return; }
+  const bankBtn = e.target.closest('[data-vbank]');
+  if (bankBtn) { state.voiceBank = bankBtn.dataset.vbank; state.voiceLimit = 36; renderWelcome(); renderPanel(); return; }
+  if (e.target.id === 'wExtMore') { state.voiceLimit += 36; renderWelcome(); return; }
   const fltBtn = e.target.closest('[data-vfilter]');
-  if (fltBtn) { state.voiceFilter = fltBtn.dataset.vfilter; renderWelcome(); renderPanel(); return; }
+  if (fltBtn) { state.voiceFilter = fltBtn.dataset.vfilter; state.voiceLimit = 36; renderWelcome(); renderPanel(); return; }
   const pickCard = e.target.closest('[data-vpick]');
   if (pickCard) {
     const v = voiceInfo(pickCard.dataset.vpick);
     state.conv.settings.voice = v.id;
     renderWelcome(); renderPanel(); renderComposer();
     if (!state.conv.draft) saveConv();
-    toast(`🎙 已选用音色：${v.id}（${v.gender} · ${v.trait}）`);
+    toast(`🎙 已选用音色：${v.name || v.id}（${v.gender} · ${v.trait}）`);
     return;
   }
   const card = e.target.closest('.mode-card');
@@ -467,6 +598,17 @@ $('#welcome').addEventListener('click', (e) => {
   }
   const ex = e.target.closest('.examples button');
   if (ex) { $('#input').value = ex.textContent.replace('（打开联网搜索）', ''); autoGrow(); $('#input').focus(); }
+});
+$('#welcome').addEventListener('change', (e) => {
+  if (e.target.id === 'wExtLang') { state.voiceLang = e.target.value; state.voiceLimit = 36; renderWelcome(); renderPanel(); }
+});
+$('#welcome').addEventListener('input', (e) => {
+  if (e.target.id === 'wExtSearch') {
+    const pos = e.target.selectionStart;
+    state.voiceQuery = e.target.value; state.voiceLimit = 36;
+    renderWelcome(); renderPanel();
+    const el = $('#wExtSearch'); if (el) { el.focus(); el.setSelectionRange(pos, pos); }
+  }
 });
 
 // ---------------- 消息渲染 ----------------
@@ -628,7 +770,7 @@ function renderComposer() {
   if (kind === 'video') html += `<button class="chip" data-open-panel>${s.vAspect} · ${s.vDuration}秒 · ${s.vResolution}</button>`;
   if (kind === 'tts') {
     const v = voiceInfo(s.voice);
-    html += `<button class="chip" data-open-panel>🔊 ${esc(v.id)}（${v.gender}·${esc(v.trait)}）</button>`;
+    html += `<button class="chip" data-open-panel>🔊 ${esc(v.name || v.id)}（${v.gender}·${esc(v.trait)}）</button>`;
     html += `<button class="chip ${state.playingVoice === v.id ? 'on' : ''}" data-vplay="${esc(v.id)}">${state.playingVoice === v.id ? '⏹ 停止试听' : '▶ 试听音色'}</button>`;
   }
   $('#quickChips').innerHTML = html;
@@ -901,28 +1043,43 @@ function renderPanel() {
     html += `<p class="hint">${isOmni ? 'Gemini Omni 走 Vertex AI Interactions 通道（global），支持最高 15 秒音画同步及参考图生视频。' : 'Veo 3.1 上传 1 张图作为首帧（图生视频），2 张图则为首帧 + 尾帧。'}视频生成通常需要 30~120 秒。</p>`;
   }
   if (kind === 'tts') {
+    ensureExtendedVoices();
     const curV = voiceInfo(s.voice);
     const f = state.voiceFilter || 'all';
-    const list = f === 'all' ? TTS_VOICES : TTS_VOICES.filter((v) => v.gender === f);
+    const bank = state.voiceBank || 'core';
+    const list = bank === 'core'
+      ? (f === 'all' ? TTS_VOICES : TTS_VOICES.filter((v) => v.gender === f))
+      : getFilteredExtVoices().slice(0, 60);
     const playingCur = state.playingVoice === curV.id;
+    const extCount = state.extVoices.length || 2120;
     html += `<div class="field"><label>当前角色音色<small>${curV.gender === '女' ? '♀ 女声' : '♂ 男声'} · ${esc(curV.pitch)}音</small></label>
       <div class="voice-panel-cur">
-        <div class="voice-top"><b>${esc(curV.id)}</b><span class="vsex ${curV.gender === '女' ? 'f' : 'm'}">${curV.gender === '女' ? '♀ 女' : '♂ 男'}</span><span class="vpitch">${esc(curV.pitch)}音</span>
+        <div class="voice-top"><b>${esc(curV.name || curV.id)}</b><span class="vsex ${curV.gender === '女' ? 'f' : 'm'}">${curV.gender === '女' ? '♀ 女' : '♂ 男'}</span><span class="vpitch">${esc(curV.pitch)}音</span>
           <button type="button" class="vplay ${playingCur ? 'playing' : ''}" data-vplay="${esc(curV.id)}">${playingCur ? '⏹ 停止' : '▶ 试听'}</button></div>
         <div class="voice-trait" style="margin-top:4px">${esc(curV.trait)} · <small style="color:var(--ink-3);font-weight:400">${esc(curV.useCase)}</small></div>
         <div class="voice-sample" style="margin-top:4px">「${esc(curV.sample)}」</div>
       </div>
-      <div class="voice-filter" style="margin-bottom:8px">
-        <button type="button" data-vfilter="all" class="${f === 'all' ? 'on' : ''}">全部 (${TTS_VOICES.length})</button>
-        <button type="button" data-vfilter="女" class="${f === '女' ? 'on' : ''}">♀ 女声 (${TTS_VOICES.filter((x) => x.gender === '女').length})</button>
-        <button type="button" data-vfilter="男" class="${f === '男' ? 'on' : ''}">♂ 男声 (${TTS_VOICES.filter((x) => x.gender === '男').length})</button>
+      <div class="voice-filter" style="margin-bottom:6px">
+        <button type="button" data-vbank="core" class="${bank === 'core' ? 'on' : ''}">核心 (${TTS_VOICES.length})</button>
+        <button type="button" data-vbank="ext" class="${bank === 'ext' ? 'on' : ''}">扩展库 (${extCount})</button>
       </div>
+      <div class="voice-filter" style="margin-bottom:8px">
+        <button type="button" data-vfilter="all" class="${f === 'all' ? 'on' : ''}">全部</button>
+        <button type="button" data-vfilter="女" class="${f === '女' ? 'on' : ''}">♀ 女</button>
+        <button type="button" data-vfilter="男" class="${f === '男' ? 'on' : ''}">♂ 男</button>
+      </div>
+      ${bank === 'ext' ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+        <select id="pExtLang">${LANG_GROUPS.map(([k, l]) => `<option value="${k}" ${state.voiceLang === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+        <input type="text" id="pExtSearch" value="${esc(state.voiceQuery)}" placeholder="搜索语种/地区/职业…">
+      </div>` : ''}
       <div class="voice-panel-list">${list.map((v) => {
         const pl = state.playingVoice === v.id;
-        return `<div class="voice-row ${v.id === curV.id ? 'on' : ''}" data-vpick="${v.id}" role="button" tabindex="0">
-          <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender}</span>
-          <div class="vinfo"><b>${esc(v.id)}</b><small>${esc(v.trait)} · ${esc(v.pitch)}音 · ${esc(v.useCase)}</small></div>
-          <button type="button" class="vplay ${pl ? 'playing' : ''}" data-vplay="${v.id}" data-short="1" title="试听">${pl ? '⏹' : '▶'}</button>
+        const ld = state.loadingVoice === v.id;
+        const sub = bank === 'core' ? `${v.trait} · ${v.pitch}音 · ${v.useCase}` : `${v.lang} · ${v.accent || ''} · ${v.persona || v.desc || ''}`;
+        return `<div class="voice-row ${v.id === curV.id ? 'on' : ''}" data-vpick="${esc(v.id)}" role="button" tabindex="0">
+          <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender || '?'}</span>
+          <div class="vinfo"><b>${esc(v.name || v.id)}</b><small>${esc(sub)}</small></div>
+          <button type="button" class="vplay ${pl || ld ? 'playing' : ''}" data-vplay="${esc(v.id)}" data-short="1" title="试听">${ld ? '…' : pl ? '⏹' : '▶'}</button>
         </div>`;
       }).join('')}</div></div>`;
     html += `<div class="field"><label>语气风格<small>可选</small></label><input type="text" data-k="ttsStyle" value="${esc(s.ttsStyle)}" placeholder="如：用温柔开心的语气说">
@@ -933,6 +1090,13 @@ function renderPanel() {
 }
 $('#panelBody').addEventListener('input', (e) => {
   const c = state.conv; const el = e.target;
+  if (el.id === 'pExtSearch') {
+    const pos = el.selectionStart;
+    state.voiceQuery = el.value; state.voiceLimit = 36;
+    renderPanel(); renderWelcome();
+    const inp = $('#pExtSearch'); if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
+    return;
+  }
   if (el.id === 'sysInput') { c.systemInstruction = el.value; renderComposer(); }
   else if (el.dataset.k) {
     const k = el.dataset.k;
@@ -946,6 +1110,7 @@ $('#panelBody').addEventListener('input', (e) => {
   clearTimeout(renderPanel._t); renderPanel._t = setTimeout(() => !c.draft && saveConv(c), 400);
 });
 $('#panelBody').addEventListener('change', (e) => {
+  if (e.target.id === 'pExtLang') { state.voiceLang = e.target.value; state.voiceLimit = 36; renderPanel(); renderWelcome(); return; }
   if (e.target.id === 'presetSelect' && e.target.value) {
     const p = state.presets.find((x) => x.id === e.target.value);
     state.conv.systemInstruction = p.content; $('#sysInput').value = p.content; renderComposer();
@@ -956,15 +1121,17 @@ $('#panelBody').addEventListener('click', (e) => {
   const c = state.conv;
   const vp = e.target.closest('[data-vplay]');
   if (vp) { e.stopPropagation(); toggleVoiceSample(vp.dataset.vplay); return; }
+  const vb = e.target.closest('[data-vbank]');
+  if (vb) { state.voiceBank = vb.dataset.vbank; state.voiceLimit = 36; renderPanel(); renderWelcome(); return; }
   const vf = e.target.closest('[data-vfilter]');
-  if (vf) { state.voiceFilter = vf.dataset.vfilter; renderPanel(); renderWelcome(); return; }
+  if (vf) { state.voiceFilter = vf.dataset.vfilter; state.voiceLimit = 36; renderPanel(); renderWelcome(); return; }
   const vpick = e.target.closest('[data-vpick]');
   if (vpick) {
     const v = voiceInfo(vpick.dataset.vpick);
     c.settings.voice = v.id;
     renderPanel(); renderComposer(); renderWelcome();
     if (!c.draft) saveConv();
-    toast(`🎙 已选用：${v.id}（${v.gender} · ${v.trait}）`);
+    toast(`🎙 已选用：${v.name || v.id}（${v.gender} · ${v.trait}）`);
     return;
   }
   const ts = e.target.closest('[data-tts-style]');

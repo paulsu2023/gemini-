@@ -925,6 +925,60 @@ app.post('/api/tts', auth, async (req, res) => {
   }
 });
 
+// 音色试听端点：优先命中核心 30 音色静态 MP3，其次命中本地/临时缓存，未命中时实时用 gemini-3.8-flash-tts 生成短句并缓存
+const LOCAL_TTS_CACHE_DIR = path.join(path.dirname(LOCAL_MEM_DIR), 'tts-samples');
+try { fs.mkdirSync(LOCAL_TTS_CACHE_DIR, { recursive: true }); } catch {}
+const EXT_VOICE_MAP = (() => {
+  try {
+    const arr = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'tts-extended-voices.json'), 'utf8'));
+    return new Map(arr.map((v) => [v.id, v]));
+  } catch { return new Map(); }
+})();
+function sampleTextForVoice(voiceId, meta) {
+  const lang = (meta?.lang || '').toLowerCase();
+  if (lang.startsWith('zh')) return `你好，我是${meta?.name || voiceId}，很高兴为你提供中文语音服务。`;
+  if (lang.startsWith('yue')) return `你好，我系${meta?.name || voiceId}，好开心可以同你倾偈。`;
+  if (lang.startsWith('ja')) return `こんにちは、${meta?.name || voiceId}です。自然な日本語でお話しします。`;
+  if (lang.startsWith('ko')) return `안녕하세요, ${meta?.name || voiceId}입니다. 반갑습니다.`;
+  return `Hello, I am ${meta?.name || voiceId}, pleased to speak with you today.`;
+}
+
+app.get('/api/tts-sample/:voice', auth, async (req, res) => {
+  const voiceId = String(req.params.voice || '').trim().slice(0, 80);
+  if (!/^[a-zA-Z0-9_-]+$/.test(voiceId)) return res.status(400).json({ error: '无效的音色 ID' });
+  const coreMp3 = path.join(__dirname, 'public', 'tts-samples', `${voiceId}.mp3`);
+  if (fs.existsSync(coreMp3)) return res.sendFile(coreMp3);
+  const cachedWav = path.join(LOCAL_TTS_CACHE_DIR, `${voiceId}.wav`);
+  if (fs.existsSync(cachedWav)) return res.sendFile(cachedWav);
+
+  const t0 = Date.now();
+  try {
+    const meta = EXT_VOICE_MAP.get(voiceId);
+    const r = await client('global').models.generateContent({
+      model: 'gemini-3.8-flash-tts',
+      contents: sampleTextForVoice(voiceId, meta),
+      config: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceId } } } },
+    });
+    const part = r.candidates?.[0]?.content?.parts?.find((p) => p.inlineData);
+    if (!part) throw new Error('未能生成试听音频');
+    let buf = Buffer.from(part.inlineData.data, 'base64');
+    let mime = part.inlineData.mimeType || 'audio/wav';
+    if (/L16|pcm/i.test(mime)) {
+      const rate = Number(/rate=(\d+)/.exec(mime)?.[1] || 24000);
+      buf = pcmToWav(buf, rate);
+      mime = 'audio/wav';
+    }
+    try { fs.writeFileSync(cachedWav, buf); } catch {}
+    const p = recordUsageEvent({ user: req.userNickname, model: 'gemini-3.8-flash-tts', kind: 'tts', ok: true, ms: Date.now() - t0, usage: r.usageMetadata });
+    if (process.env.VERCEL) await Promise.allSettled([p]);
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(buf);
+  } catch (e) {
+    res.status(500).json({ error: errMsg(e) });
+  }
+});
+
 // ---------- 视频生成：同时支持 Gemini Omni (Interactions API) 与 Veo 3.1 (generateVideos) ----------
 const videoOps = new Map(); // id -> { kind: 'omni'|'veo', op?, result?, error?, done?, location, createdAt }
 
