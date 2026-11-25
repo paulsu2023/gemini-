@@ -1,5 +1,6 @@
 // Gemini 体验 —— 前端主逻辑（原生 JS，无构建步骤）
 // 数据全部存在浏览器 IndexedDB（对话、图片、视频），设置与提示词库存在 localStorage
+import { calcEventCost, formatUnitPrice, USD_TO_CNY, getRate } from '/pricing.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -71,6 +72,7 @@ const state = {
   memories: [], memoryBucket: '', memoryCloudOk: false,
   nickname: LS.get('lastNickname', ''),
   isAdmin: false, adminSecret: '', adminUsers: [], adminPassword: '', adminInspectHtml: '',
+  usageEvents: [], usageSource: 'merged', usageRange: 'all', usageRateMode: 'promo', healthReport: null, healthBusy: false,
   // 每次打开网页必须重新登录验证（token 仅保存在当前页面内存，不跨次免密跳过）
   token: '', tasks: new Map(), attachments: [], needPassword: true,
   needVideoPassword: !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname),
@@ -884,11 +886,84 @@ async function loadAdminUsers() {
   }
 }
 
+async function loadUsageData() {
+  try {
+    const r = await apiJSON('/api/admin/usage');
+    state.usageEvents = r.events || [];
+    if (settingsTab === 'usage') renderSettings();
+  } catch (e) {
+    toast('加载用量账本失败：' + e.message);
+  }
+}
+
+function collectLocalBrowserUsage() {
+  const list = [];
+  for (const c of state.convs || []) {
+    for (const m of c.messages || []) {
+      if (m.role !== 'model') continue;
+      const model = m.meta?.model || c.model || 'unknown';
+      const info = modelInfo(model);
+      const kind = info.kind || 'chat';
+      const u = m.meta?.usage || {};
+      const vidCount = (m.parts || []).filter((p) => p.inlineData?.mimeType?.startsWith('video/')).length;
+      const imgCount = (m.parts || []).filter((p) => !p.thought && p.inlineData?.mimeType?.startsWith('image/')).length;
+      const sec = Number(m.meta?.seconds) || 0;
+      const vDur = Number(c.settings?.vDuration) || 8;
+      list.push({
+        id: 'idb-' + m.id,
+        ts: m.ts || c.updatedAt || c.createdAt || Date.now(),
+        user: state.nickname || state.prefs.memoryUser || '本机用户',
+        model,
+        kind,
+        ok: !m.meta?.error,
+        error: m.meta?.error || '',
+        ms: sec * 1000,
+        promptTokens: Number(u.promptTokenCount) || 0,
+        outputTokens: Number(u.candidatesTokenCount) || 0,
+        thoughtTokens: Number(u.thoughtsTokenCount) || 0,
+        cachedTokens: Number(u.cachedContentTokenCount) || 0,
+        totalTokens: Number(u.totalTokenCount) || ((Number(u.promptTokenCount) || 0) + (Number(u.candidatesTokenCount) || 0) + (Number(u.thoughtsTokenCount) || 0)),
+        imageCount: imgCount,
+        videoCount: vidCount,
+        videoSeconds: kind === 'video' && vidCount ? vidCount * vDur : 0,
+        resolution: c.settings?.vResolution || '720p',
+      });
+    }
+  }
+  return list;
+}
+
+function getFilteredUsageEvents() {
+  const serverEvs = state.usageEvents || [];
+  const localEvs = collectLocalBrowserUsage();
+  let evs = [];
+  if (state.usageSource === 'server') {
+    evs = serverEvs;
+  } else if (state.usageSource === 'local') {
+    evs = localEvs;
+  } else {
+    // 合并模式：服务端启用前（早于最早服务端记录前 5 秒）的本地老对话自动补入，避免新数据重复计算
+    const minServerTs = serverEvs.length ? Math.min(...serverEvs.map((e) => e.ts || Infinity)) - 5000 : Infinity;
+    const olderLocal = localEvs.filter((e) => (e.ts || 0) < minServerTs);
+    evs = [...olderLocal, ...serverEvs];
+  }
+  const now = Date.now();
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const cutoff = state.usageRange === 'today' ? dayStart.getTime()
+    : state.usageRange === '7d' ? now - 7 * 86400000
+      : state.usageRange === '30d' ? now - 30 * 86400000 : 0;
+  return evs.filter((e) => (e.ts || 0) >= cutoff);
+}
+
+const fmtNum = (n) => Number(n || 0).toLocaleString('zh-CN');
+const fmtUSD = (u) => u < 0.01 && u > 0 ? `$${u.toFixed(4)}` : `$${u.toFixed(3)}`;
+
 function updateAdminUI() {
-  const btn = $('#openAdmin');
-  const tab = $('#settingsTabs [data-tab="admin"]');
-  if (btn) btn.style.display = state.isAdmin ? '' : 'none';
-  if (tab) tab.style.display = state.isAdmin ? '' : 'none';
+  const isAdm = !!state.isAdmin;
+  ['#openAdmin', '#openUsage', '#settingsTabs [data-tab="admin"]', '#settingsTabs [data-tab="usage"]'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.style.display = isAdm ? '' : 'none';
+  });
 }
 
 async function ensureAdminAccess() {
@@ -912,7 +987,7 @@ async function ensureAdminAccess() {
 }
 
 async function openSettings(tab = 'prompts') {
-  if (tab === 'admin') {
+  if ((tab === 'admin' || tab === 'usage')) {
     const ok = await ensureAdminAccess();
     if (!ok) return;
   }
@@ -920,12 +995,157 @@ async function openSettings(tab = 'prompts') {
   renderSettings();
   $('#settingsDialog').showModal();
   if (tab === 'admin') loadAdminUsers();
+  if (tab === 'usage') loadUsageData();
 }
 function renderSettings() {
   updateAdminUI();
   $$('#settingsTabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === settingsTab));
   const body = $('#settingsBody');
-  if (settingsTab === 'memory') {
+  if (settingsTab === 'usage') {
+    const evs = getFilteredUsageEvents();
+    const mode = state.usageRateMode || 'promo';
+    let totalUsd = 0, totalIn = 0, totalOut = 0, totalThink = 0, totalCache = 0, okCalls = 0, errCalls = 0, totalImgs = 0, totalVidSec = 0, totalMs = 0, timedCalls = 0;
+    const byModel = new Map();
+    const byUser = new Map();
+    for (const ev of evs) {
+      const { usd, rate } = calcEventCost(ev, mode);
+      totalUsd += usd;
+      totalIn += ev.promptTokens || 0;
+      totalOut += ev.outputTokens || 0;
+      totalThink += ev.thoughtTokens || 0;
+      totalCache += ev.cachedTokens || 0;
+      if (ev.ok === false) errCalls++; else okCalls++;
+      totalImgs += ev.imageCount || 0;
+      totalVidSec += ev.videoSeconds || 0;
+      if (ev.ms > 0) { totalMs += ev.ms; timedCalls++; }
+
+      const mk = ev.model || 'unknown';
+      const mr = byModel.get(mk) || {
+        model: mk, kind: ev.kind || modelInfo(mk).kind || 'chat',
+        calls: 0, ok: 0, err: 0, inTok: 0, outTok: 0, thinkTok: 0, cacheTok: 0,
+        imgs: 0, vidSec: 0, ms: 0, usd: 0, tag: rate.tag || '',
+      };
+      mr.calls++; if (ev.ok === false) mr.err++; else mr.ok++;
+      mr.inTok += ev.promptTokens || 0; mr.outTok += ev.outputTokens || 0; mr.thinkTok += ev.thoughtTokens || 0; mr.cacheTok += ev.cachedTokens || 0;
+      mr.imgs += ev.imageCount || 0; mr.vidSec += ev.videoSeconds || 0; mr.ms += ev.ms || 0; mr.usd += usd;
+      byModel.set(mk, mr);
+
+      const uk = ev.user || 'default';
+      const ur = byUser.get(uk) || { user: uk, calls: 0, tokens: 0, imgs: 0, vidSec: 0, usd: 0 };
+      ur.calls++; ur.tokens += (ev.promptTokens || 0) + (ev.outputTokens || 0) + (ev.thoughtTokens || 0);
+      ur.imgs += ev.imageCount || 0; ur.vidSec += ev.videoSeconds || 0; ur.usd += usd;
+      byUser.set(uk, ur);
+    }
+    const modelRows = [...byModel.values()].sort((a, b) => b.usd - a.usd || b.calls - a.calls);
+    const userRows = [...byUser.values()].sort((a, b) => b.usd - a.usd || b.calls - a.calls);
+    const totalCalls = okCalls + errCalls;
+    const totalTokens = totalIn + totalOut + totalThink;
+    const successRate = totalCalls ? ((okCalls / totalCalls) * 100).toFixed(1) : '100.0';
+    const avgSec = timedCalls ? (totalMs / timedCalls / 1000).toFixed(1) : '0.0';
+    const cny = totalUsd * USD_TO_CNY;
+    const trialPct = Math.min(100, (totalUsd / 300) * 100).toFixed(2);
+    const health = state.healthReport;
+
+    body.innerHTML = `<div class="usage-toolbar">
+      <div class="usage-filters">
+        <select id="uSource" title="数据来源">
+          <option value="merged" ${state.usageSource === 'merged' ? 'selected' : ''}>📦 全部合并（历史会话 + 服务端账本）</option>
+          <option value="server" ${state.usageSource === 'server' ? 'selected' : ''}>🌐 仅服务端账本（含线上朋友）</option>
+          <option value="local" ${state.usageSource === 'local' ? 'selected' : ''}>💻 仅当前浏览器历史对话</option>
+        </select>
+        <select id="uRange" title="时间范围">
+          <option value="all" ${state.usageRange === 'all' ? 'selected' : ''}>全部时间</option>
+          <option value="today" ${state.usageRange === 'today' ? 'selected' : ''}>今天</option>
+          <option value="7d" ${state.usageRange === '7d' ? 'selected' : ''}>近 7 天</option>
+          <option value="30d" ${state.usageRange === '30d' ? 'selected' : ''}>近 30 天</option>
+        </select>
+        <select id="uRate" title="官方费率标准">
+          <option value="promo" ${mode === 'promo' ? 'selected' : ''}>🏷 当前官方价（含 2026-11 促销）</option>
+          <option value="standard" ${mode === 'standard' ? 'selected' : ''}>📈 正式标准价（12月/1月涨价参考）</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button type="button" class="btn" id="uHealthBtn" ${state.healthBusy ? 'disabled' : ''}>${state.healthBusy ? '🩺 体检中…' : '🩺 全面体检'}</button>
+        <button type="button" class="btn" id="uRefresh">🔄 刷新</button>
+        <button type="button" class="btn" id="uExportCsv">⬇ 导出 CSV</button>
+        <button type="button" class="btn danger" id="uClearServer" title="仅清空服务端账本，不删对话">清空账本</button>
+      </div>
+    </div>
+
+    ${health ? `<div class="health-box">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <b>🩺 全链路体检报告（总耗时 ${health.totalMs} ms · ${health.ok ? '✅ 全部正常' : '⚠️ 存在异常'}）</b>
+        <button type="button" class="btn" id="uLivePingBtn" style="padding:3px 10px;font-size:12px" ${state.healthBusy ? 'disabled' : ''}>⚡ 附带 1-Token 实机推理测试</button>
+      </div>
+      ${(health.checks || []).map((c) => `<div class="health-row">
+        <span>${c.ok ? '🟢' : '🔴'} <b>${esc(c.name)}</b></span>
+        <span style="color:var(--ink-2)">${esc(c.detail)}${c.ms ? ` <small style="color:var(--ink-3)">(${c.ms}ms)</small>` : ''}</span>
+      </div>`).join('')}
+    </div>` : ''}
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">💵 预估官方费用 (${mode === 'promo' ? '促销期' : '标准期'})</div>
+        <div class="kpi-val">${fmtUSD(totalUsd)} <small style="font-size:13px;font-weight:400;color:var(--ink-3)">≈ ¥${cny.toFixed(2)}</small></div>
+        <div class="kpi-sub">占 \$300 赠金约 ${trialPct}%（汇率 ${USD_TO_CNY}）</div>
+        <div class="kpi-bar"><i style="width:${Math.min(100, Number(trialPct))}%"></i></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">🪙 总 Token 消耗</div>
+        <div class="kpi-val">${fmtNum(totalTokens)}</div>
+        <div class="kpi-sub">输入 ${fmtNum(totalIn)} · 输出 ${fmtNum(totalOut)}<br>深度思考 ${fmtNum(totalThink)} · 缓存 ${fmtNum(totalCache)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">⚡ 请求数与媒体产出</div>
+        <div class="kpi-val">${totalCalls} <small style="font-size:13px;font-weight:400;color:#2d8a56">成功率 ${successRate}%</small></div>
+        <div class="kpi-sub">报错 ${errCalls} 次 · 画图 ${totalImgs} 张 · 视频 ${totalVidSec} 秒</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">⏱ 平均耗时 & 高耗提醒</div>
+        <div class="kpi-val">${avgSec}s <small style="font-size:13px;font-weight:400;color:var(--ink-3)">/ 次</small></div>
+        <div class="kpi-sub">${modelRows[0] ? `最耗费：${esc(modelInfo(modelRows[0].model).name)} (${fmtUSD(modelRows[0].usd)})` : '暂无调用记录'}</div>
+      </div>
+    </div>
+
+    <div class="usage-table-wrap">
+      <table class="usage-table">
+        <thead><tr>
+          <th>模型</th><th>类型</th><th class="num">次数 (成功/错)</th><th class="num">输入 Token</th>
+          <th class="num">输出 + 思考 Token</th><th class="num">产出</th><th>官方参考单价</th><th class="num">金额 (USD / CNY)</th>
+        </tr></thead>
+        <tbody>
+          ${modelRows.length ? modelRows.map((r) => {
+            const pct = totalUsd > 0 ? Math.max(2, Math.round((r.usd / totalUsd) * 100)) : 0;
+            const kindLabel = KINDS[r.kind]?.label || r.kind;
+            const mediaCol = r.kind === 'video' ? `${r.vidSec} 秒` : r.kind === 'image' ? `${r.imgs} 张` : r.cacheTok ? `缓存 ${fmtNum(r.cacheTok)}` : '—';
+            const unitTxt = formatUnitPrice(r.model, r.kind, mode);
+            return `<tr>
+              <td><b>${esc(modelInfo(r.model).name)}</b><br><small style="color:var(--ink-3);font-family:var(--mono)">${esc(r.model)}</small></td>
+              <td><span class="kind-dot ${esc(r.kind)}" style="display:inline-block;margin-right:4px"></span>${esc(kindLabel)}</td>
+              <td class="num">${r.calls} <small style="color:var(--ink-3)">(${r.ok}/${r.err})</small></td>
+              <td class="num">${fmtNum(r.inTok)}</td>
+              <td class="num">${fmtNum(r.outTok + r.thinkTok)}${r.thinkTok ? `<br><small style="color:var(--ink-3)">含思考 ${fmtNum(r.thinkTok)}</small>` : ''}</td>
+              <td class="num">${mediaCol}</td>
+              <td><small title="${esc(r.tag)}">${esc(unitTxt)}<br><span style="color:var(--ink-3)">${esc(r.tag)}</span></small></td>
+              <td class="num"><b>${fmtUSD(r.usd)}</b> <small style="color:var(--ink-3)">¥${(r.usd * USD_TO_CNY).toFixed(2)}</small><span class="cost-bar-bg"><i style="width:${pct}%"></i></span></td>
+            </tr>`;
+          }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--ink-3);padding:24px">当前筛选条件下暂无消耗记录（发送一次对话/画图/视频/记忆提炼后立即统计）</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+
+    ${userRows.length > 1 || (userRows[0] && userRows[0].user !== 'default') ? `<div class="usage-table-wrap">
+      <table class="usage-table">
+        <thead><tr><th>使用者昵称</th><th class="num">调用次数</th><th class="num">总 Token</th><th class="num">画图张数</th><th class="num">视频秒数</th><th class="num">预估费用</th></tr></thead>
+        <tbody>${userRows.map((u) => `<tr>
+          <td>👤 <b>${esc(u.user)}</b></td><td class="num">${u.calls}</td><td class="num">${fmtNum(u.tokens)}</td>
+          <td class="num">${u.imgs}</td><td class="num">${u.vidSec} 秒</td>
+          <td class="num"><b>${fmtUSD(u.usd)}</b> <small style="color:var(--ink-3)">(¥${(u.usd * USD_TO_CNY).toFixed(2)})</small></td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : ''}
+    <p class="hint" style="margin:0">注：金额按 Google Cloud Vertex AI 官方公开价格表（<code>global</code> 节点，${mode === 'promo' ? '当前 2026-11 促销价' : '正式标准价'}）实时估算；实际账单与 \$300 赠金余额以 Google Cloud Console 结算页为准。注意 <code>gemini-4-argon/carbon</code> 将于 2026-12-01 结束 \$2/\$10 半价促销恢复为 \$4/\$20。</p>`;
+  } else if (settingsTab === 'memory') {
     const user = state.prefs.memoryUser || state.nickname || 'default';
     body.innerHTML = `<div class="mem-bar">
       <span>👤 记忆空间（昵称）：</span>
@@ -1013,14 +1233,56 @@ function renderSettings() {
 $('#settingsTabs').addEventListener('click', async (e) => {
   const t = e.target.closest('[data-tab]');
   if (t) {
-    if (t.dataset.tab === 'admin' && !(await ensureAdminAccess())) return;
+    if ((t.dataset.tab === 'admin' || t.dataset.tab === 'usage') && !(await ensureAdminAccess())) return;
     settingsTab = t.dataset.tab;
     renderSettings();
     if (settingsTab === 'admin') loadAdminUsers();
+    if (settingsTab === 'usage') loadUsageData();
   }
 });
 $('#settingsBody').addEventListener('click', async (e) => {
   const t = e.target;
+  // —— Token 消耗与体检看板操作 ——
+  if (t.id === 'uRefresh') { toast('正在刷新用量账本…'); await loadUsageData(); return; }
+  if (t.id === 'uClearServer') {
+    if (!confirm('确定清空服务端用量账本？（本地历史对话不会受影响）')) return;
+    try { await apiJSON('/api/admin/usage/clear', {}); state.usageEvents = []; renderSettings(); toast('已清空服务端账本'); }
+    catch (err) { toast('清空失败：' + err.message); }
+    return;
+  }
+  if (t.id === 'uHealthBtn' || t.id === 'uLivePingBtn') {
+    const livePing = t.id === 'uLivePingBtn';
+    state.healthBusy = true; renderSettings();
+    try {
+      state.healthReport = await apiJSON('/api/admin/health-check', { livePing });
+      if (livePing) await loadUsageData();
+    } catch (err) {
+      toast('体检出错：' + err.message);
+    } finally {
+      state.healthBusy = false; renderSettings();
+    }
+    return;
+  }
+  if (t.id === 'uExportCsv') {
+    const evs = getFilteredUsageEvents();
+    const mode = state.usageRateMode || 'promo';
+    const rows = [['时间', '用户', '模型', '类型', '状态', '耗时ms', '输入Token', '输出Token', '思考Token', '缓存Token', '图片张数', '视频秒数', '分辨率', '预估USD', '错误信息']];
+    for (const ev of evs) {
+      const { usd } = calcEventCost(ev, mode);
+      rows.push([
+        new Date(ev.ts || 0).toISOString(), ev.user || '', ev.model || '', ev.kind || '',
+        ev.ok === false ? '失败' : '成功', ev.ms || 0, ev.promptTokens || 0, ev.outputTokens || 0,
+        ev.thoughtTokens || 0, ev.cachedTokens || 0, ev.imageCount || 0, ev.videoSeconds || 0,
+        ev.resolution || '', usd.toFixed(6), (ev.error || '').replace(/[\r\n,]/g, ' '),
+      ]);
+    }
+    const csv = '\uFEFF' + rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = `gemini-用量账单-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    return;
+  }
   // —— 管理员用户后台操作 ——
   if (t.id === 'adminRefresh') {
     toast('正在刷新用户数据…');
@@ -1159,6 +1421,9 @@ $('#settingsBody').addEventListener('click', async (e) => {
   }
 });
 $('#settingsBody').addEventListener('change', async (e) => {
+  if (e.target.id === 'uSource') { state.usageSource = e.target.value; renderSettings(); return; }
+  if (e.target.id === 'uRange') { state.usageRange = e.target.value; renderSettings(); return; }
+  if (e.target.id === 'uRate') { state.usageRateMode = e.target.value; renderSettings(); return; }
   if (e.target.id === 'memEnableChk') { state.prefs.memoryEnabled = e.target.checked; LS.set('prefs', state.prefs); updateMemBadge(); renderComposer(); }
   if (e.target.id === 'memAutoChk') { state.prefs.memoryAutoExtract = e.target.checked; LS.set('prefs', state.prefs); }
   if (e.target.id === 'memCloudChk') { state.prefs.memoryCloudSync = e.target.checked; LS.set('prefs', state.prefs); if (e.target.checked) saveMemories('☁ 已开启 Google 云同步'); }
@@ -1178,6 +1443,7 @@ $('#settingsBody').addEventListener('keydown', (e) => {
   if (e.target.id === 'memUserInput' && e.key === 'Enter') { e.preventDefault(); $('#memSwitchUser')?.click(); }
 });
 $('#openMemory').onclick = () => openSettings('memory');
+$('#openUsage').onclick = () => openSettings('usage');
 $('#openAdmin').onclick = () => openSettings('admin');
 $('#openSettings').onclick = () => openSettings('prompts');
 $('#userBadgeBtn').onclick = () => showLogin();

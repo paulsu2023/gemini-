@@ -91,9 +91,10 @@ async function setupProxyIfAvailable() {
       throw lastErr;
     };
     console.log(`🌐 已启用网络代理（含 TLS 防断连自动重试）：${proxyUrl}`);
-  } catch {}
+    return proxyUrl;
+  } catch { return ''; }
 }
-await setupProxyIfAvailable();
+const activeProxyUrl = (await setupProxyIfAvailable()) || '';
 
 // ---------- 凭据加载：优先环境变量（线上部署），其次项目内 credentials/service-account.json ----------
 function loadCredentials() {
@@ -220,6 +221,7 @@ app.use('/vendor/marked', express.static(nm('marked/lib')));
 app.use('/vendor/dompurify', express.static(nm('dompurify/dist')));
 app.use('/vendor/hljs', express.static(nm('@highlightjs/cdn-assets')));
 app.use('/vendor/katex', express.static(nm('katex/dist')));
+app.get('/pricing.js', (req, res) => res.sendFile(path.join(__dirname, 'pricing.js')));
 
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -252,6 +254,7 @@ try {
   try { fs.mkdirSync(LOCAL_MEM_DIR, { recursive: true }); } catch {}
 }
 const LOCAL_USERS_FILE = path.join(path.dirname(LOCAL_MEM_DIR), 'users.json');
+const LOCAL_USAGE_FILE = path.join(path.dirname(LOCAL_MEM_DIR), 'usage-ledger.json');
 
 function safeUserKey(raw = 'default') {
   const s = String(raw || 'default').trim().toLowerCase().slice(0, 64);
@@ -394,9 +397,180 @@ async function recordUserActivity(rawNickname, event = {}, immediate = false) {
   return cur;
 }
 
-// 启动时后台拉取一次云端用户账本并预热 OAuth2 令牌
+// 启动时后台拉取一次云端用户账本与用量账本，并预热 OAuth2 令牌
 syncUsersFromCloud();
 googleAuth.getAccessToken().catch(() => {});
+
+// ---------- 模型 Token / 费用消耗账本（本地 data/usage-ledger.json + GCS admin/usage-ledger.json） ----------
+const MAX_USAGE_EVENTS = 5000;
+let usageLedger = { events: [], updatedAt: 0 };
+try {
+  if (fs.existsSync(LOCAL_USAGE_FILE)) usageLedger = JSON.parse(fs.readFileSync(LOCAL_USAGE_FILE, 'utf8'));
+  if (!Array.isArray(usageLedger.events)) usageLedger.events = [];
+} catch { usageLedger = { events: [], updatedAt: 0 }; }
+
+function saveLocalUsage() {
+  try { fs.writeFileSync(LOCAL_USAGE_FILE, JSON.stringify(usageLedger, null, 2), 'utf8'); } catch {}
+}
+
+let usagePersistTimer = null;
+async function persistUsageToCloud(immediate = false) {
+  saveLocalUsage();
+  if (immediate || process.env.VERCEL) {
+    try { await gcsWriteJson('admin/usage-ledger.json', usageLedger); } catch {}
+    return;
+  }
+  clearTimeout(usagePersistTimer);
+  usagePersistTimer = setTimeout(async () => {
+    try { await gcsWriteJson('admin/usage-ledger.json', usageLedger); } catch {}
+  }, 5000);
+}
+
+async function syncUsageFromCloud() {
+  try {
+    const cloud = await gcsReadJson('admin/usage-ledger.json');
+    if (Array.isArray(cloud?.events)) {
+      const seen = new Set(usageLedger.events.map((e) => e.id));
+      for (const e of cloud.events) {
+        if (e?.id && !seen.has(e.id)) {
+          seen.add(e.id);
+          usageLedger.events.push(e);
+        }
+      }
+      usageLedger.events.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      if (usageLedger.events.length > MAX_USAGE_EVENTS) {
+        usageLedger.events = usageLedger.events.slice(-MAX_USAGE_EVENTS);
+      }
+      usageLedger.updatedAt = Math.max(usageLedger.updatedAt || 0, cloud.updatedAt || 0);
+      saveLocalUsage();
+    }
+  } catch {}
+  return usageLedger;
+}
+syncUsageFromCloud();
+
+async function recordUsageEvent(entry = {}, immediate = false) {
+  const u = entry.usage || {};
+  const promptTokens = Number(entry.promptTokens ?? u.promptTokenCount) || 0;
+  const outputTokens = Number(entry.outputTokens ?? u.candidatesTokenCount) || 0;
+  const thoughtTokens = Number(entry.thoughtTokens ?? u.thoughtsTokenCount) || 0;
+  const cachedTokens = Number(entry.cachedTokens ?? u.cachedContentTokenCount) || 0;
+  const totalTokens = Number(entry.totalTokens ?? u.totalTokenCount) || (promptTokens + outputTokens + thoughtTokens);
+  const item = {
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    user: String(entry.user || 'default').trim().slice(0, 32) || 'default',
+    model: entry.model || 'unknown',
+    kind: entry.kind || 'chat',
+    ok: entry.ok !== false,
+    error: entry.error ? String(entry.error).slice(0, 120) : '',
+    ms: Number(entry.ms) || 0,
+    promptTokens,
+    outputTokens,
+    thoughtTokens,
+    cachedTokens,
+    totalTokens,
+    imageCount: Number(entry.imageCount) || 0,
+    videoSeconds: Number(entry.videoSeconds) || 0,
+    videoCount: Number(entry.videoCount) || 0,
+    resolution: entry.resolution || '',
+  };
+  usageLedger.events.push(item);
+  if (usageLedger.events.length > MAX_USAGE_EVENTS) {
+    usageLedger.events = usageLedger.events.slice(-MAX_USAGE_EVENTS);
+  }
+  usageLedger.updatedAt = item.ts;
+  await persistUsageToCloud(immediate);
+  return item;
+}
+
+// 管理员接口：读取全部模型用量账本
+app.get('/api/admin/usage', adminAuth, async (req, res) => {
+  try {
+    await syncUsageFromCloud();
+    res.json({
+      events: usageLedger.events || [],
+      updatedAt: usageLedger.updatedAt || Date.now(),
+      bucket: MEMORY_BUCKET,
+    });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// 管理员接口：清空服务端用量账本
+app.post('/api/admin/usage/clear', adminAuth, async (req, res) => {
+  try {
+    usageLedger = { events: [], updatedAt: Date.now() };
+    await persistUsageToCloud(true);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+});
+
+// 管理员接口：全链路系统健康体检（凭据、代理/直连 OAuth2、GCS 免费云桶、可选 1-token 模型联通测试）
+app.post('/api/admin/health-check', adminAuth, async (req, res) => {
+  const checks = [];
+  const tStart = Date.now();
+  const pushCheck = (name, ok, detail, ms) => checks.push({ name, ok, detail, ms });
+
+  // 1. 凭据与环境
+  pushCheck('服务账号凭据', !!(credentials?.client_email && credentials?.private_key), `${PROJECT} (${credentials?.client_email || '未知'})`, 0);
+  pushCheck('访问模式与防护', true, `本机免密:${isLocalDirectRequest(req) ? '是' : '否'} · 代理:${activeProxyUrl || '直连 / TUN 模式'}`, 0);
+
+  // 2. Google OAuth2 令牌延迟
+  let token = '';
+  const tAuth = Date.now();
+  try {
+    token = await googleAuth.getAccessToken();
+    pushCheck('Google OAuth2 鉴权', !!token, '令牌获取正常', Date.now() - tAuth);
+  } catch (e) {
+    pushCheck('Google OAuth2 鉴权', false, errMsg(e), Date.now() - tAuth);
+  }
+
+  // 3. Google Cloud Storage 免费记忆/账本桶检查
+  const tGcs = Date.now();
+  try {
+    await ensureMemoryBucket(token);
+    const data = await gcsReadJson('admin/users.json');
+    pushCheck('GCS 云存储桶读写', true, `${MEMORY_BUCKET}（已有 ${Object.keys(data?.users || {}).length} 位用户档案）`, Date.now() - tGcs);
+  } catch (e) {
+    pushCheck('GCS 云存储桶读写', false, errMsg(e), Date.now() - tGcs);
+  }
+
+  // 4. 模型目录可达性（models.list 只读免费调用）
+  const tList = Date.now();
+  try {
+    const pager = await client('global').models.list({ config: { queryBase: true, pageSize: 50 } });
+    let count = 0;
+    for await (const _m of pager) count++;
+    pushCheck('Vertex 模型目录枚举', count > 0, `global 节点返回 ${count} 个可用底座模型`, Date.now() - tList);
+  } catch (e) {
+    pushCheck('Vertex 模型目录枚举', false, errMsg(e), Date.now() - tList);
+  }
+
+  // 5. 可选超低耗真机对话连通测试（仅当勾选 livePing 时用 gemini-3.5-flash-lite 测 1 个极简回复）
+  if (req.body?.livePing) {
+    const tPing = Date.now();
+    try {
+      const r = await client('global').models.generateContent({
+        model: 'gemini-3.5-flash-lite',
+        contents: '回复OK',
+        config: { maxOutputTokens: 8, temperature: 0 },
+      });
+      recordUsageEvent({
+        user: req.userNickname,
+        model: 'gemini-3.5-flash-lite',
+        kind: 'chat',
+        ok: true,
+        ms: Date.now() - tPing,
+        usage: r.usageMetadata,
+      });
+      pushCheck('Gemini 实机推理测试', true, `gemini-3.5-flash-lite 响应正常（消耗 ${r.usageMetadata?.totalTokenCount || 0} tokens）`, Date.now() - tPing);
+    } catch (e) {
+      pushCheck('Gemini 实机推理测试', false, errMsg(e), Date.now() - tPing);
+    }
+  }
+
+  res.json({ ok: checks.every((c) => c.ok), totalMs: Date.now() - tStart, checks });
+});
 
 app.post('/api/login', async (req, res) => {
   const nickname = String(req.body?.nickname || '').trim().slice(0, 32);
@@ -538,10 +712,15 @@ ${snippet}
 4. 若没有任何值得新增的长期记忆，返回空数组。
 请严格返回 JSON 格式：{"added": ["记忆1", "记忆2"]}`;
 
+    const t0 = Date.now();
     const r = await client('global').models.generateContent({
       model: 'gemini-3.5-flash-lite',
       contents: prompt,
       config: { responseMimeType: 'application/json', temperature: 0.2 },
+    });
+    recordUsageEvent({
+      user: req.userNickname, model: 'gemini-3.5-flash-lite', kind: 'chat',
+      ok: true, ms: Date.now() - t0, usage: r.usageMetadata,
     });
     const parsed = JSON.parse(r.text || '{"added":[]}');
     const added = (Array.isArray(parsed.added) ? parsed.added : []).map((s) => String(s).trim()).filter(Boolean);
@@ -646,6 +825,9 @@ app.post('/api/chat', auth, async (req, res) => {
   const abort = new AbortController();
   res.on('close', () => abort.abort());
 
+  const t0 = Date.now();
+  const kind = req.body.kind === 'image' ? 'image' : 'chat';
+  let imageCount = 0;
   try {
     const { model } = req.body;
     const lastUserPart = [...(req.body.contents || [])].reverse().find((c) => c.role === 'user')?.parts?.find((p) => p.text)?.text || '';
@@ -661,7 +843,11 @@ app.post('/api/chat', auth, async (req, res) => {
         });
         for await (const chunk of stream) {
           const cand = chunk.candidates?.[0];
-          for (const p of cand?.content?.parts || []) { emitted = true; send('part', p); }
+          for (const p of cand?.content?.parts || []) {
+            emitted = true;
+            if (!p.thought && p.inlineData?.mimeType?.startsWith('image/')) imageCount++;
+            send('part', p);
+          }
           if (cand?.groundingMetadata) grounding = cand.groundingMetadata;
           if (cand?.finishReason) finishReason = cand.finishReason;
           if (chunk.usageMetadata) usage = chunk.usageMetadata;
@@ -681,13 +867,18 @@ app.post('/api/chat', auth, async (req, res) => {
     }
     if (lastErr) throw lastErr;
     send('done', { usage, grounding, finishReason });
-    recordUserActivity(req.userNickname, {
-      type: req.body.kind === 'image' ? 'image' : 'chat',
-      model,
-      preview: lastUserPart,
+    recordUserActivity(req.userNickname, { type: kind, model, preview: lastUserPart });
+    recordUsageEvent({
+      user: req.userNickname, model, kind, ok: true, ms: Date.now() - t0, usage, imageCount,
     });
   } catch (e) {
-    if (!abort.signal.aborted) send('error', { message: errMsg(e) });
+    if (!abort.signal.aborted) {
+      const m = errMsg(e);
+      send('error', { message: m });
+      recordUsageEvent({
+        user: req.userNickname, model: req.body?.model, kind, ok: false, error: m, ms: Date.now() - t0,
+      });
+    }
   } finally {
     res.end();
   }
@@ -703,6 +894,7 @@ function pcmToWav(pcm, rate = 24000, channels = 1, bits = 16) {
   return Buffer.concat([h, pcm]);
 }
 app.post('/api/tts', auth, async (req, res) => {
+  const t0 = Date.now();
   try {
     const { model, text, voice = 'Kore', style } = req.body;
     recordUserActivity(req.userNickname, { type: 'tts', model, preview: text });
@@ -718,8 +910,13 @@ app.post('/api/tts', auth, async (req, res) => {
       data = pcmToWav(Buffer.from(data, 'base64'), rate).toString('base64');
       mimeType = 'audio/wav';
     }
+    recordUsageEvent({ user: req.userNickname, model, kind: 'tts', ok: true, ms: Date.now() - t0, usage: r.usageMetadata });
     res.json({ mimeType, data, usage: r.usageMetadata });
-  } catch (e) { res.status(500).json({ error: errMsg(e) }); }
+  } catch (e) {
+    const m = errMsg(e);
+    recordUsageEvent({ user: req.userNickname, model: req.body?.model, kind: 'tts', ok: false, error: m, ms: Date.now() - t0 });
+    res.status(500).json({ error: m });
+  }
 });
 
 // ---------- 视频生成：同时支持 Gemini Omni (Interactions API) 与 Veo 3.1 (generateVideos) ----------
@@ -766,7 +963,14 @@ app.post('/api/video', auth, async (req, res) => {
           ]
         : fullPrompt;
 
-      const job = { kind: 'omni', done: false, videos: null, error: null, createdAt: Date.now() };
+      const jobMeta = {
+        user: req.userNickname,
+        model,
+        durationSeconds: Number(settings.durationSeconds) || 8,
+        resolution: settings.resolution || '720p',
+        count: 1,
+      };
+      const job = { kind: 'omni', done: false, videos: null, error: null, createdAt: Date.now(), meta: jobMeta };
       videoOps.set(id, job);
 
       // 后台异步执行 Interactions API 视频生成，前端统一通过 /api/video/:id 轮询进度
@@ -790,11 +994,20 @@ app.post('/api/video', auth, async (req, res) => {
           if (!vids.length) {
             const errStep = (r.steps || []).find((s) => s.error)?.error?.message;
             job.error = errStep || r.output_text || '模型未返回视频（可能被安全策略过滤）';
+            recordUsageEvent({ user: jobMeta.user, model, kind: 'video', ok: false, error: job.error, ms: Date.now() - job.createdAt });
           } else {
             job.videos = vids;
+            recordUsageEvent({
+              user: jobMeta.user, model, kind: 'video', ok: true, ms: Date.now() - job.createdAt,
+              usage: r.usage || r.usageMetadata,
+              videoCount: vids.length,
+              videoSeconds: jobMeta.durationSeconds * vids.length,
+              resolution: jobMeta.resolution,
+            });
           }
         } catch (e) {
           job.error = errMsg(e);
+          recordUsageEvent({ user: jobMeta.user, model, kind: 'video', ok: false, error: job.error, ms: Date.now() - job.createdAt });
         } finally {
           job.done = true;
         }
@@ -818,7 +1031,15 @@ app.post('/api/video', auth, async (req, res) => {
     const params = { model, prompt, config };
     if (image) params.image = { imageBytes: image.data, mimeType: image.mimeType };
     const op = await client(location).models.generateVideos(params);
-    videoOps.set(id, { kind: 'veo', op, location, createdAt: Date.now() });
+    videoOps.set(id, {
+      kind: 'veo', op, location, createdAt: Date.now(),
+      meta: {
+        user: req.userNickname, model,
+        durationSeconds: Number(settings.durationSeconds) || 8,
+        resolution: settings.resolution || '720p',
+        count: config.numberOfVideos,
+      },
+    });
     res.json({ id });
   } catch (e) { res.status(500).json({ error: errMsg(e) }); }
 });
@@ -837,15 +1058,26 @@ app.get('/api/video/:id', auth, async (req, res) => {
     job.op = await client(job.location).operations.getVideosOperation({ operation: job.op });
     if (!job.op.done) return res.json({ done: false, elapsed });
     videoOps.delete(req.params.id);
-    if (job.op.error) return res.json({ done: true, error: job.op.error.message || JSON.stringify(job.op.error) });
+    if (job.op.error) {
+      const m = job.op.error.message || JSON.stringify(job.op.error);
+      recordUsageEvent({ user: job.meta?.user, model: job.meta?.model, kind: 'video', ok: false, error: m, ms: elapsed * 1000 });
+      return res.json({ done: true, error: m });
+    }
     const r = job.op.response || {};
     const videos = (r.generatedVideos || []).map((g) => ({
       mimeType: g.video?.mimeType || 'video/mp4', data: g.video?.videoBytes, uri: g.video?.uri,
     }));
     if (!videos.length) {
       const why = r.raiMediaFilteredReasons?.join('；') || '没有返回视频（可能被安全过滤）';
+      recordUsageEvent({ user: job.meta?.user, model: job.meta?.model, kind: 'video', ok: false, error: why, ms: elapsed * 1000 });
       return res.json({ done: true, error: why });
     }
+    recordUsageEvent({
+      user: job.meta?.user, model: job.meta?.model, kind: 'video', ok: true, ms: elapsed * 1000,
+      videoCount: videos.length,
+      videoSeconds: (job.meta?.durationSeconds || 8) * videos.length,
+      resolution: job.meta?.resolution || '720p',
+    });
     res.json({ done: true, videos });
   } catch (e) { res.status(500).json({ error: errMsg(e) }); }
 });

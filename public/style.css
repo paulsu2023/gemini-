@@ -105,9 +105,9 @@ kbd { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border: 1px s
 .kind-dot.image { background: var(--image); }
 .kind-dot.video { background: var(--video); }
 .kind-dot.tts { background: var(--tts); }
-.sidebar-foot { display: flex; gap: 6px; padding: 10px 12px 14px; border-top: 1px solid var(--line); }
-.foot-btn { flex: 1; text-align: left; border: 0; background: none; padding: 8px 10px; border-radius: 9px; color: var(--ink-2); }
-.foot-btn:last-child { flex: none; }
+.sidebar-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 10px 12px; border-top: 1px solid var(--line); }
+.foot-btn { border: 0; background: none; padding: 6px 8px; border-radius: 8px; color: var(--ink-2); font-size: 12.5px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.foot-btn:last-child { margin-left: auto; }
 .foot-btn:hover { background: var(--line); }
 
 /* ---------- 顶栏 ---------- */
@@ -300,14 +300,14 @@ audio { width: 100%; max-width: 480px; margin: 6px 0; }
 .btn.danger { color: var(--accent-2); }
 
 /* ---------- 弹窗 ---------- */
-.dialog { border: 0; padding: 0; background: transparent; color: var(--ink); max-width: min(860px, 94vw); width: 100%; }
+.dialog { border: 0; padding: 0; background: transparent; color: var(--ink); max-width: min(980px, 95vw); width: 100%; }
 .dialog.small { max-width: 380px; }
 .dialog::backdrop { background: rgba(20, 15, 8, .45); backdrop-filter: blur(3px); }
 .dialog-inner { background: var(--paper); border: 1px solid var(--line-2); border-radius: 18px; box-shadow: var(--shadow); overflow: hidden; }
-.dialog-head { display: flex; align-items: center; gap: 18px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
-.dialog-head h2 { margin: 0; font-family: var(--serif); font-size: 20px; }
-.tabs { display: flex; gap: 4px; flex: 1; }
-.tabs button { border: 0; background: none; padding: 6px 12px; border-radius: 9px; color: var(--ink-3); font-size: 14px; }
+.dialog-head { display: flex; align-items: center; gap: 14px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.dialog-head h2 { margin: 0; font-family: var(--serif); font-size: 20px; white-space: nowrap; }
+.tabs { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
+.tabs button { border: 0; background: none; padding: 6px 11px; border-radius: 9px; color: var(--ink-3); font-size: 13.5px; white-space: nowrap; }
 .tabs button.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
 .dialog-body { padding: 18px 20px 22px; max-height: 70vh; overflow-y: auto; }
 .preset-layout { display: grid; grid-template-columns: 220px 1fr; gap: 18px; min-height: 380px; }
@@ -360,6 +360,30 @@ audio { width: 100%; max-width: 480px; margin: 6px 0; }
 .admin-ops { display: flex; gap: 6px; flex-wrap: wrap; }
 .admin-ops .btn { padding: 4px 10px; font-size: 12px; border-radius: 8px; }
 .admin-inspect { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--paper-2); max-height: 280px; overflow-y: auto; font-size: 13px; }
+
+/* Token 与费用消耗看板样式 */
+.usage-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.usage-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.usage-filters select { padding: 5px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--card); font-size: 13px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi-card { border: 1px solid var(--line); background: var(--card); border-radius: 12px; padding: 12px 14px; }
+.kpi-label { font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
+.kpi-val { font-family: var(--serif); font-size: 20px; font-weight: 900; color: var(--ink); line-height: 1.25; }
+.kpi-sub { font-size: 11.5px; color: var(--ink-2); margin-top: 4px; line-height: 1.4; }
+.kpi-bar { height: 5px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 6px; }
+.kpi-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.usage-table-wrap { border: 1px solid var(--line); border-radius: 12px; background: var(--card); overflow-x: auto; margin-bottom: 14px; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.usage-table th { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--ink-3); font-weight: 600; background: var(--paper-2); white-space: nowrap; }
+.usage-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.usage-table tr:last-child td { border-bottom: 0; }
+.usage-table td.num, .usage-table th.num { text-align: right; font-family: var(--mono); }
+.cost-bar-bg { width: 72px; height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; display: inline-block; vertical-align: middle; margin-left: 6px; }
+.cost-bar-bg > i { display: block; height: 100%; background: var(--accent); }
+.health-box { border: 1px solid var(--line); border-radius: 12px; background: var(--paper-2); padding: 12px 14px; margin-bottom: 12px; }
+.health-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
+.health-row:last-child { border-bottom: 0; }
+@media (max-width: 760px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .lightbox { position: fixed; inset: 0; z-index: 100; background: rgba(10, 8, 5, .85); display: none; place-items: center; cursor: zoom-out; padding: 3vh; }
 .lightbox.open { display: grid; }
