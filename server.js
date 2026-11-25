@@ -373,6 +373,7 @@ async function persistUsersToCloud(immediate = false) {
 }
 
 async function recordUserActivity(rawNickname, event = {}, immediate = false) {
+  if (process.env.VERCEL) await syncUsersFromCloud();
   const nickname = String(rawNickname || 'default').trim().slice(0, 32) || 'default';
   const userKey = safeUserKey(nickname);
   if (!usersRegistry.users) usersRegistry.users = {};
@@ -450,6 +451,7 @@ async function syncUsageFromCloud() {
 syncUsageFromCloud();
 
 async function recordUsageEvent(entry = {}, immediate = false) {
+  if (process.env.VERCEL) await syncUsageFromCloud();
   const u = entry.usage || {};
   const promptTokens = Number(entry.promptTokens ?? u.promptTokenCount) || 0;
   const outputTokens = Number(entry.outputTokens ?? u.candidatesTokenCount) || 0;
@@ -867,17 +869,19 @@ app.post('/api/chat', auth, async (req, res) => {
     }
     if (lastErr) throw lastErr;
     send('done', { usage, grounding, finishReason });
-    recordUserActivity(req.userNickname, { type: kind, model, preview: lastUserPart });
-    recordUsageEvent({
+    const p1 = recordUserActivity(req.userNickname, { type: kind, model, preview: lastUserPart });
+    const p2 = recordUsageEvent({
       user: req.userNickname, model, kind, ok: true, ms: Date.now() - t0, usage, imageCount,
     });
+    if (process.env.VERCEL) await Promise.allSettled([p1, p2]);
   } catch (e) {
     if (!abort.signal.aborted) {
       const m = errMsg(e);
       send('error', { message: m });
-      recordUsageEvent({
+      const pErr = recordUsageEvent({
         user: req.userNickname, model: req.body?.model, kind, ok: false, error: m, ms: Date.now() - t0,
       });
+      if (process.env.VERCEL) await Promise.allSettled([pErr]);
     }
   } finally {
     res.end();
@@ -897,7 +901,6 @@ app.post('/api/tts', auth, async (req, res) => {
   const t0 = Date.now();
   try {
     const { model, text, voice = 'Kore', style } = req.body;
-    recordUserActivity(req.userNickname, { type: 'tts', model, preview: text });
     const r = await client(resolveLocation(model, req.body.location)).models.generateContent({
       model, contents: style ? `${style}：${text}` : text,
       config: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } },
@@ -910,11 +913,14 @@ app.post('/api/tts', auth, async (req, res) => {
       data = pcmToWav(Buffer.from(data, 'base64'), rate).toString('base64');
       mimeType = 'audio/wav';
     }
-    recordUsageEvent({ user: req.userNickname, model, kind: 'tts', ok: true, ms: Date.now() - t0, usage: r.usageMetadata });
+    const p1 = recordUserActivity(req.userNickname, { type: 'tts', model, preview: text });
+    const p2 = recordUsageEvent({ user: req.userNickname, model, kind: 'tts', ok: true, ms: Date.now() - t0, usage: r.usageMetadata });
+    if (process.env.VERCEL) await Promise.allSettled([p1, p2]);
     res.json({ mimeType, data, usage: r.usageMetadata });
   } catch (e) {
     const m = errMsg(e);
-    recordUsageEvent({ user: req.userNickname, model: req.body?.model, kind: 'tts', ok: false, error: m, ms: Date.now() - t0 });
+    const pErr = recordUsageEvent({ user: req.userNickname, model: req.body?.model, kind: 'tts', ok: false, error: m, ms: Date.now() - t0 });
+    if (process.env.VERCEL) await Promise.allSettled([pErr]);
     res.status(500).json({ error: m });
   }
 });
