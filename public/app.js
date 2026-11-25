@@ -530,17 +530,19 @@ function renderWelcome() {
       const shown = matched.slice(0, state.voiceLimit || 36);
       bodyHtml = `<div class="voice-controls">
         <select id="wExtLang">${LANG_GROUPS.map(([k, l]) => `<option value="${k}" ${state.voiceLang === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
-        <input id="wExtSearch" value="${esc(state.voiceQuery)}" placeholder="搜索口音、职业、地区，如 Mandarin / Shanghai / Doctor…">
+        <input id="wExtSearch" value="${esc(state.voiceQuery)}" placeholder="搜索口音、职业、地区，如 普通话 / 上海 / 律师 / 温柔…">
         <span class="hint">匹配 ${matched.length} 个角色（点击 ▶ 实时试听并自动缓存）</span>
       </div>
       <div class="voice-grid">
         ${shown.length ? shown.map((v) => {
           const playing = state.playingVoice === v.id;
           const loading = state.loadingVoice === v.id;
+          const gCls = v.gender === '女' ? 'f' : v.gender === '男' ? 'm' : 'n';
+          const gTxt = v.gender === '女' ? '♀ 女' : v.gender === '男' ? '♂ 男' : '中性';
           return `<div class="voice-card ${curV === v.id ? 'on' : ''}" data-vpick="${esc(v.id)}" role="button" tabindex="0">
             <div class="voice-top">
               <b title="${esc(v.id)}">${esc(v.name)}</b>
-              <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender === '女' ? '♀ 女' : '♂ 男'}</span>
+              <span class="vsex ${gCls}">${gTxt}</span>
               <span class="vpitch">${esc(v.lang)}</span>
               <button type="button" class="vplay ${playing || loading ? 'playing' : ''}" data-vplay="${esc(v.id)}">${loading ? '⏳ 加载中' : playing ? '⏹ 停止' : '▶ 试听'}</button>
             </div>
@@ -1052,12 +1054,14 @@ function renderPanel() {
       : getFilteredExtVoices().slice(0, 60);
     const playingCur = state.playingVoice === curV.id;
     const extCount = state.extVoices.length || 2120;
-    html += `<div class="field"><label>当前角色音色<small>${curV.gender === '女' ? '♀ 女声' : '♂ 男声'} · ${esc(curV.pitch)}音</small></label>
+    const curGCls = curV.gender === '女' ? 'f' : curV.gender === '男' ? 'm' : 'n';
+    const curGTxt = curV.gender === '女' ? '♀ 女' : curV.gender === '男' ? '♂ 男' : '中性';
+    html += `<div class="field"><label>当前角色音色<small>${curV.gender === '女' ? '♀ 女声' : curV.gender === '男' ? '♂ 男声' : '中性声音'} · ${esc(curV.pitch)}音</small></label>
       <div class="voice-panel-cur">
-        <div class="voice-top"><b>${esc(curV.name || curV.id)}</b><span class="vsex ${curV.gender === '女' ? 'f' : 'm'}">${curV.gender === '女' ? '♀ 女' : '♂ 男'}</span><span class="vpitch">${esc(curV.pitch)}音</span>
+        <div class="voice-top"><b>${esc(curV.name || curV.id)}</b><span class="vsex ${curGCls}">${curGTxt}</span><span class="vpitch">${esc(curV.pitch)}音</span>
           <button type="button" class="vplay ${playingCur ? 'playing' : ''}" data-vplay="${esc(curV.id)}">${playingCur ? '⏹ 停止' : '▶ 试听'}</button></div>
         <div class="voice-trait" style="margin-top:4px">${esc(curV.trait)} · <small style="color:var(--ink-3);font-weight:400">${esc(curV.useCase)}</small></div>
-        <div class="voice-sample" style="margin-top:4px">「${esc(curV.sample)}」</div>
+        <div class="voice-sample" style="margin-top:4px">${curV.isCore ? `「${esc(curV.sample)}」` : esc(curV.sample)}</div>
       </div>
       <div class="voice-filter" style="margin-bottom:6px">
         <button type="button" data-vbank="core" class="${bank === 'core' ? 'on' : ''}">核心 (${TTS_VOICES.length})</button>
@@ -1075,9 +1079,10 @@ function renderPanel() {
       <div class="voice-panel-list">${list.map((v) => {
         const pl = state.playingVoice === v.id;
         const ld = state.loadingVoice === v.id;
+        const gCls = v.gender === '女' ? 'f' : v.gender === '男' ? 'm' : 'n';
         const sub = bank === 'core' ? `${v.trait} · ${v.pitch}音 · ${v.useCase}` : `${v.lang} · ${v.accent || ''} · ${v.persona || v.desc || ''}`;
         return `<div class="voice-row ${v.id === curV.id ? 'on' : ''}" data-vpick="${esc(v.id)}" role="button" tabindex="0">
-          <span class="vsex ${v.gender === '女' ? 'f' : 'm'}">${v.gender || '?'}</span>
+          <span class="vsex ${gCls}">${v.gender || '?'}</span>
           <div class="vinfo"><b>${esc(v.name || v.id)}</b><small>${esc(sub)}</small></div>
           <button type="button" class="vplay ${pl || ld ? 'playing' : ''}" data-vplay="${esc(v.id)}" data-short="1" title="试听">${ld ? '…' : pl ? '⏹' : '▶'}</button>
         </div>`;

@@ -254,6 +254,7 @@ audio { width: 100%; max-width: 480px; margin: 6px 0; }
 .vsex { font-size: 11px; padding: 1px 6px; border-radius: 999px; font-weight: 600; }
 .vsex.f { background: rgba(200, 68, 45, .12); color: var(--accent); }
 .vsex.m { background: rgba(45, 110, 175, .12); color: #2d6eaf; }
+.vsex.n { background: rgba(110, 110, 120, .14); color: var(--ink-2); }
 .vpitch { font-size: 11px; color: var(--ink-3); background: var(--paper-2); padding: 1px 6px; border-radius: 6px; }
 .vplay { margin-left: auto; border: 1px solid var(--line-2); background: var(--paper); color: var(--ink-2); border-radius: 999px; padding: 2px 9px; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
 .vplay:hover, .vplay.playing { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }

@@ -936,11 +936,12 @@ const EXT_VOICE_MAP = (() => {
 })();
 function sampleTextForVoice(voiceId, meta) {
   const lang = (meta?.lang || '').toLowerCase();
+  const rawName = meta?.name && !/[\u4e00-\u9fa5]/.test(meta.name) ? meta.name : '';
   if (lang.startsWith('zh')) return `你好，我是${meta?.name || voiceId}，很高兴为你提供中文语音服务。`;
   if (lang.startsWith('yue')) return `你好，我系${meta?.name || voiceId}，好开心可以同你倾偈。`;
-  if (lang.startsWith('ja')) return `こんにちは、${meta?.name || voiceId}です。自然な日本語でお話しします。`;
-  if (lang.startsWith('ko')) return `안녕하세요, ${meta?.name || voiceId}입니다. 반갑습니다.`;
-  return `Hello, I am ${meta?.name || voiceId}, pleased to speak with you today.`;
+  if (lang.startsWith('ja')) return rawName ? `こんにちは、${rawName}です。自然な日本語でお話しします。` : 'こんにちは、AI音声の試聴サンプルをお届けします。';
+  if (lang.startsWith('ko')) return rawName ? `안녕하세요, ${rawName}입니다. 반갑습니다.` : '안녕하세요, 자연스러운 한국어 음성 샘플입니다.';
+  return rawName ? `Hello, I am ${rawName}, pleased to speak with you today.` : 'Hello, this is a voice preview sample, pleased to speak with you today.';
 }
 
 app.get('/api/tts-sample/:voice', auth, async (req, res) => {
