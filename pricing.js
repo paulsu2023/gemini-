@@ -205,3 +205,60 @@ export function formatUnitPrice(modelId, kind, mode = 'promo') {
   }
   return `$${r.in ?? 0} / $${r.out ?? 0} per 1M`;
 }
+
+export function formatPriceBadge(modelId, kind, mode = 'promo') {
+  const r = getRate(modelId, mode);
+  if (kind === 'music' && r.musicPerTrack) return `$${r.musicPerTrack.toFixed(2)}/首`;
+  if (kind === 'video' && r.videoPerSec) {
+    const p = r.videoPerSec['720p'] ?? 0.1;
+    return `${/omni/i.test(modelId) ? '约' : ''}$${p.toFixed(2)}/秒`;
+  }
+  if (kind === 'image' && r.imageFallback) return `约$${r.imageFallback}/张`;
+  return '';
+}
+
+export function estimateRunCost(modelId, kind, settings = {}, mode = 'promo') {
+  const r = getRate(modelId, mode);
+  if (kind === 'music') {
+    const isL3 = /lyria-3/i.test(modelId);
+    const count = isL3 ? 1 : (settings.mSeed ? 1 : Math.max(1, Number(settings.mCount) || 1));
+    const unit = r.musicPerTrack ?? 0.06;
+    const usd = unit * count;
+    const cny = usd * USD_TO_CNY;
+    return {
+      usd, cny, exact: true,
+      short: `$${usd.toFixed(2)} (≈¥${cny.toFixed(2)})`,
+      detail: count > 1 ? `$${unit.toFixed(2)}/首 × ${count} 首` : `$${unit.toFixed(2)}/首`,
+      tag: r.tag || '',
+    };
+  }
+  if (kind === 'video') {
+    const isOmni = /omni/i.test(modelId);
+    const dur = Math.max(1, Number(settings.vDuration) || 8);
+    const res = String(settings.vResolution || '720p').toLowerCase();
+    const count = isOmni ? 1 : Math.max(1, Number(settings.vCount) || 1);
+    const perSec = r.videoPerSec?.[res] ?? r.videoPerSec?.['720p'] ?? 0.1;
+    const usd = perSec * dur * count;
+    const cny = usd * USD_TO_CNY;
+    return {
+      usd, cny, exact: !isOmni,
+      short: `${isOmni ? '约 ' : ''}$${usd.toFixed(2)} (≈¥${cny.toFixed(2)})`,
+      detail: `$${perSec.toFixed(2)}/秒 × ${dur}秒${count > 1 ? ` × ${count}条` : ''} · ${res.toUpperCase()}`,
+      tag: r.tag || '',
+    };
+  }
+  if (kind === 'image') {
+    const base = r.imageFallback ?? 0.067;
+    const sz = String(settings.imageSize || 'auto').toUpperCase();
+    const mult = sz === '4K' ? 1.8 : 1;
+    const usd = base * mult;
+    const cny = usd * USD_TO_CNY;
+    return {
+      usd, cny, exact: false,
+      short: `约 $${usd.toFixed(3)} (≈¥${cny.toFixed(2)})`,
+      detail: `按出图 Token 估算 · ${sz === 'AUTO' ? '默认尺寸' : sz}`,
+      tag: r.tag || '',
+    };
+  }
+  return null;
+}

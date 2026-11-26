@@ -1,6 +1,6 @@
 // Gemini 体验 —— 前端主逻辑（原生 JS，无构建步骤）
 // 数据全部存在浏览器 IndexedDB（对话、图片、视频），设置与提示词库存在 localStorage
-import { calcEventCost, formatUnitPrice, USD_TO_CNY, getRate } from '/pricing.js';
+import { calcEventCost, formatUnitPrice, formatPriceBadge, estimateRunCost, USD_TO_CNY, getRate } from '/pricing.js';
 import { TTS_VOICES } from '/voices.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -361,7 +361,10 @@ function renderModelMenu() {
     const ms = state.models.filter((m) => m.kind === k);
     if (!ms.length) continue;
     html += `<div class="mm-group"><span class="kind-dot ${k}"></span>${info.icon} ${info.label}</div>`;
-    html += ms.map((m) => `<button class="mm-item ${m.id === cur ? 'active' : ''}" data-id="${m.id}"><b>${esc(m.name)}</b><small>${esc(m.desc || m.id)}</small></button>`).join('');
+    html += ms.map((m) => {
+      const price = formatPriceBadge(m.id, m.kind);
+      return `<button class="mm-item ${m.id === cur ? 'active' : ''}" data-id="${m.id}"><b>${esc(m.name)}</b><small>${esc(m.desc || m.id)}</small>${price ? `<span class="mm-price">${esc(price)}</span>` : ''}</button>`;
+    }).join('');
   }
   if (state.custom.length) {
     html += `<div class="mm-group">🧪 自定义</div>`;
@@ -783,6 +786,8 @@ function renderComposer() {
     if (isL3) html += `<button class="chip ${s.mInstrumental ? 'on' : ''}" data-chip="mInstrumental">🎹 纯音乐</button>`;
     html += `<button class="chip" data-open-panel>${isL3 ? (/pro/i.test(state.conv.model) ? '🎼 完整歌曲 · 最长3分钟' : '🎵 30秒片段 · 含词曲') : '🎻 30秒纯音乐 WAV'}</button>`;
   }
+  const est = estimateRunCost(state.conv.model, kind, s);
+  if (est) html += `<button class="chip cost" data-open-panel title="${esc(est.detail + (est.tag ? ' · ' + est.tag : ''))}">💰 预估 ${esc(est.short)}</button>`;
   $('#quickChips').innerHTML = html;
   const memCount = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false).length : 0;
   const hints = [];
@@ -1025,6 +1030,13 @@ function renderPanel() {
   const tog = (k, label, tip = '') => `<div class="toggle"><div>${label}${tip ? `<small>${tip}</small>` : ''}</div><label class="switch"><input type="checkbox" data-k="${k}" ${s[k] ? 'checked' : ''}><span></span></label></div>`;
   const seg = (k, label, opts) => `<div class="field"><div class="lab">${label}</div><div class="seg">${opts.map(([v, l]) => `<button type="button" class="${String(s[k]) === String(v) ? 'on' : ''}" data-seg="${k}" data-v="${v}">${l ?? v}</button>`).join('')}</div></div>`;
   let html = `<div class="field"><div class="lab">模型<small>${esc(c.model)}</small></div></div>`;
+  const panelEst = estimateRunCost(c.model, kind, s);
+  if (panelEst) {
+    html += `<div class="cost-card">
+      <div class="cost-card-top"><span>💵 本次生成预估</span><b>${esc(panelEst.short)}</b></div>
+      <div class="cost-card-sub">${esc(panelEst.detail)}${panelEst.tag ? ` · ${esc(panelEst.tag)}` : ''}</div>
+    </div>`;
+  }
   if (kind === 'chat' || kind === 'image') {
     html += `<div class="field"><label>前置提示词（System）<small><button type="button" class="link-btn" id="savePreset">存为预设</button></small></label>
       <select id="presetSelect"><option value="">— 从提示词库选择 —</option>${state.presets.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
