@@ -364,7 +364,7 @@ function renderModelMenu() {
     html += `<div class="mm-group">🧪 自定义</div>`;
     html += state.custom.map((m) => `<button class="mm-item ${m.id === cur ? 'active' : ''}" data-id="${m.id}"><b>${esc(m.id)}</b><small>${KINDS[m.kind].label} · ${m.location} <span data-rm="${m.id}" title="移除">✕</span></small></button>`).join('');
   }
-  html += `<div class="mm-custom"><input id="cmId" placeholder="自定义模型 ID，如 gemini-4-argon" />
+  html += `<div class="mm-custom"><input id="cmId" placeholder="自定义模型 ID，如 gemini-4-neon" />
     <select id="cmKind">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join('')}</select>
     <select id="cmLoc"><option>global</option><option>us-central1</option><option>europe-west4</option><option>asia-northeast1</option></select>
     <button class="btn" id="cmAdd" type="button">添加</button></div>`;
@@ -1008,7 +1008,10 @@ function renderPanel() {
     html += range('temperature', '温度 Temperature', 0, 2, 0.05, '越高越有创意');
     html += range('topP', 'Top P', 0, 1, 0.01);
     html += `<div class="field"><label>最大输出长度<small>留空=模型默认</small></label><input type="number" data-k="maxOutputTokens" value="${s.maxOutputTokens}" placeholder="如 8192" min="1"></div>`;
-    html += seg('thinkingLevel', '思考强度', [['auto', '自动'], ['minimal', '极低'], ['low', '低'], ['medium', '中'], ['high', '高']]);
+    const thinkOpts = /^gemini-4-/i.test(c.model)
+      ? [['auto', '自动'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '极高']]
+      : [['auto', '自动'], ['minimal', '极低'], ['low', '低'], ['medium', '中'], ['high', '高']];
+    html += seg('thinkingLevel', '思考强度', thinkOpts);
     html += tog('includeThoughts', '显示思考过程', '展示模型的推理摘要');
     html += `<div class="sec-title">工具</div>`;
     html += tog('googleSearch', '联网搜索', 'Google 搜索 Grounding，附来源');
@@ -1437,7 +1440,7 @@ function renderSettings() {
         </tr>`).join('')}</tbody>
       </table>
     </div>` : ''}
-    <p class="hint" style="margin:0">注：金额按 Google Cloud Vertex AI 官方公开价格表（<code>global</code> 节点，${mode === 'promo' ? '当前 2026-11 促销价' : '正式标准价'}）实时估算；实际账单与 \$300 赠金余额以 Google Cloud Console 结算页为准。注意 <code>gemini-4-argon/carbon</code> 将于 2026-12-01 结束 \$2/\$10 半价促销恢复为 \$4/\$20。</p>`;
+    <p class="hint" style="margin:0">注：金额按 Google Cloud Vertex AI 官方公开价格表（<code>global</code> 节点，${mode === 'promo' ? '当前 2026-11 促销价' : '正式标准价'}）实时估算；实际账单与 \$300 赠金余额以 Google Cloud Console 结算页为准。<code>gemini-4-neon</code> 官方标准价为 \$3/\$15；<code>gemini-4-argon/carbon</code> 将于 2026-12-01 结束 \$2/\$10 半价促销恢复为 \$4/\$20。</p>`;
   } else if (settingsTab === 'memory') {
     const user = state.prefs.memoryUser || state.nickname || 'default';
     body.innerHTML = `<div class="mem-bar">

@@ -13,6 +13,10 @@ export const MODEL_PRICING = {
     promo: { in: 2.0, out: 10.0, cache: 0.1, tag: '官方促销价 (11月底前)' },
     standard: { in: 4.0, out: 20.0, cache: 0.2, tag: '官方标准价 (12/1起)' },
   },
+  'gemini-4-neon': {
+    promo: { in: 3.0, out: 15.0, cache: 0.15, tag: '官方标准价 (缓存95%折)' },
+    standard: { in: 3.0, out: 15.0, cache: 0.15, tag: '官方标准价 (缓存95%折)' },
+  },
   'gemini-4-hydrogen': {
     promo: { in: 1.5, out: 7.5, cache: 0.075, tag: '官方标准价' },
     standard: { in: 1.5, out: 7.5, cache: 0.075, tag: '官方标准价' },
@@ -48,6 +52,10 @@ export const MODEL_PRICING = {
   'gemini-3-flash-preview': {
     promo: { in: 0.5, out: 3.0, cache: 0.05, tag: '官方预览估算' },
     standard: { in: 0.75, out: 3.75, cache: 0.075, tag: '官方标准参考' },
+  },
+  'gemma-4-26b-a4b-it-maas': {
+    promo: { in: 0.1, out: 0.4, cache: 0.01, tag: 'MaaS 开源模型参考价' },
+    standard: { in: 0.1, out: 0.4, cache: 0.01, tag: 'MaaS 开源模型参考价' },
   },
 
   // —— 原生画图 ——
@@ -106,6 +114,10 @@ export const MODEL_PRICING = {
   'gemini-3.8-flash-lite-tts': {
     promo: { in: 0.5, out: 9.0, cache: 0.05, tag: 'TTS Flash 同档' },
     standard: { in: 0.5, out: 18.0, cache: 0.05, tag: 'TTS Flash 同档' },
+  },
+  'gemini-2.5-pro-tts': {
+    promo: { in: 1.0, out: 20.0, cache: 0.1, tag: '2.5 Pro TTS 参考价' },
+    standard: { in: 1.0, out: 20.0, cache: 0.1, tag: '2.5 Pro TTS 参考价' },
   },
   'gemini-2.5-flash-tts': {
     promo: { in: 0.5, out: 10.0, cache: 0.05, tag: '2.5 TTS 参考价' },

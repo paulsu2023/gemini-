@@ -793,6 +793,7 @@ function buildConfig(body) {
     const noMinimal = isG4 || /pro/i.test(model);
     let level = s.thinkingLevel && s.thinkingLevel !== 'auto' ? s.thinkingLevel.toUpperCase() : (isG4 ? 'LOW' : null);
     if (level === 'MINIMAL' && noMinimal) level = 'LOW';
+    if (level === 'XHIGH' && !isG4) level = 'HIGH';
     if (level) cfg.thinkingConfig = { thinkingLevel: level };
     if (s.includeThoughts) cfg.thinkingConfig = { ...(cfg.thinkingConfig || {}), includeThoughts: true };
   } else if (s.includeThoughts) {

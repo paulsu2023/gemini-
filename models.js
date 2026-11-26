@@ -4,6 +4,7 @@ export const MODELS = [
   // —— 对话 ——
   { id: 'gemini-4-argon', name: 'Gemini 4 Argon', kind: 'chat', location: 'global', desc: '新一代旗舰，复杂推理' },
   { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', kind: 'chat', location: 'global', desc: '新一代旗舰，均衡' },
+  { id: 'gemini-4-neon', name: 'Gemini 4 Neon', kind: 'chat', location: 'global', desc: '最新主力旗舰，高速强推理均衡' },
   { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen', kind: 'chat', location: 'global', desc: '新一代轻量旗舰，极速高性价比' },
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', kind: 'chat', location: 'global', desc: '最新 Flash，快且强' },
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', kind: 'chat', location: 'global' },
@@ -13,6 +14,7 @@ export const MODELS = [
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro (预览)', kind: 'chat', location: 'global', desc: '深度思考' },
   { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', kind: 'chat', location: 'global' },
   { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash (预览)', kind: 'chat', location: 'global' },
+  { id: 'gemma-4-26b-a4b-it-maas', name: 'Gemma 4 26B A4B', kind: 'chat', location: 'global', desc: '最新开源权重 MoE 模型' },
   // —— 画图（Gemini 原生出图，支持多轮改图、上传参考图） ——
   { id: 'gemini-nano-banana-2.1', name: 'Nano Banana 2.1', kind: 'image', location: 'global', desc: '最新原生画图' },
   { id: 'gemini-3-pro-image', name: 'Gemini 3 Pro Image', kind: 'image', location: 'global', desc: '高质量，支持 2K/4K' },
@@ -29,5 +31,6 @@ export const MODELS = [
   // —— 语音合成 ——
   { id: 'gemini-3.8-flash-tts', name: 'Gemini 3.8 Flash TTS', kind: 'tts', location: 'global' },
   { id: 'gemini-3.8-flash-lite-tts', name: 'Gemini 3.8 Flash Lite TTS', kind: 'tts', location: 'global' },
+  { id: 'gemini-2.5-pro-tts', name: 'Gemini 2.5 Pro TTS', kind: 'tts', location: 'global', desc: '高精度 Pro 语音合成' },
   { id: 'gemini-2.5-flash-tts', name: 'Gemini 2.5 Flash TTS', kind: 'tts', location: 'global' },
 ];
