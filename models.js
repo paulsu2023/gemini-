@@ -33,4 +33,8 @@ export const MODELS = [
   { id: 'gemini-3.8-flash-lite-tts', name: 'Gemini 3.8 Flash Lite TTS', kind: 'tts', location: 'global' },
   { id: 'gemini-2.5-pro-tts', name: 'Gemini 2.5 Pro TTS', kind: 'tts', location: 'global', desc: '高精度 Pro 语音合成' },
   { id: 'gemini-2.5-flash-tts', name: 'Gemini 2.5 Flash TTS', kind: 'tts', location: 'global' },
+  // —— 音乐生成（Lyria 3 走 Vertex AI Interactions API / global；Lyria 2 走 :predict / us-central1） ——
+  { id: 'lyria-3-pro-preview', name: 'Lyria 3 Pro (预览)', kind: 'music', api: 'interactions', location: 'global', desc: '完整歌曲（最长约3分钟，支持人声与歌词）' },
+  { id: 'lyria-3-clip-preview', name: 'Lyria 3 Clip (预览)', kind: 'music', api: 'interactions', location: 'global', desc: '30 秒短曲 / BGM（支持人声与歌词）' },
+  { id: 'lyria-002', name: 'Lyria 2 (纯音乐)', kind: 'music', api: 'predict', location: 'us-central1', desc: '30 秒 48kHz 纯音乐 WAV' },
 ];

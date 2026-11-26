@@ -14,12 +14,14 @@ const KINDS = {
   image: { label: '画图', icon: '🎨', desc: '文生图、上传参考图改图', ph: '描述你想要的画面；可上传参考图让它改图…' },
   video: { label: '视频', icon: '🎬', desc: 'Gemini Omni / Veo 3.1 文生与图生视频', ph: '描述视频画面与镜头运动；可上传参考图或首尾帧…' },
   tts: { label: '语音', icon: '🔊', desc: '文字转自然语音', ph: '输入要朗读的文字…' },
+  music: { label: '音乐', icon: '🎵', desc: 'Lyria 3 词曲人声 / 纯音乐生成', ph: '描述想要的曲风、情绪、乐器、节奏或歌词（Lyria 3 支持上传参考图配乐）…' },
 };
 const EXAMPLES = {
   chat: ['用通俗的话解释一下量子纠缠', '帮我写一封得体的请假邮件', '今天有哪些重要科技新闻？（打开联网搜索）', '写一个 Python 脚本批量重命名图片'],
   image: ['一只戴着宇航员头盔的橘猫，漂浮在星空中，电影感光影', '水墨风格的江南小镇，细雨，乌篷船', '极简扁平风格的咖啡店 logo，暖色调', '赛博朋克夜晚的重庆洪崖洞，霓虹灯'],
   video: ['航拍镜头缓缓掠过云海之上的雪山日出', '一只柯基在海边沙滩上奔跑，慢动作，夕阳', '雨夜的东京街头，镜头跟随一把红伞前行', '咖啡倒入杯中的特写，奶泡形成拉花'],
   tts: ['大家好，欢迎来到 Gemini 体验，今天我们一起探索 AI 的无限可能。', '从前有座山，山里有座庙，庙里有个老和尚在给小和尚讲故事。'],
+  music: ['一首温暖治愈的东京夏夜 City Pop，复古合成器贝斯，温柔中文女声演唱关于霓虹与晚风的歌', '清晨阳光咖啡馆里的轻快木吉他 Lo-Fi 纯音乐，100 BPM，温暖放松', '史诗级科幻电影预告片管弦乐，弦乐渐强与震撼铜管，充满希望感', '国风电子赛博混音，古筝与现代电子节拍结合，动感十足'],
 };
 const voiceInfo = (id) => {
   const core = TTS_VOICES.find((v) => v.id === id);
@@ -44,6 +46,7 @@ const DEFAULT_SETTINGS = {
   aspectRatio: 'auto', imageSize: 'auto',
   vAspect: '16:9', vDuration: 8, vResolution: '720p', vAudio: true, vCount: 1, vNegative: '', vEnhance: true, vPerson: 'allow_adult', vSeed: '',
   voice: 'Kore', ttsStyle: '',
+  mInstrumental: false, mLyrics: '', mNegative: '', mSeed: '', mCount: 1,
 };
 const DEFAULT_PRESETS = [
   { id: 'none', name: '（无前置提示词）', content: '' },
@@ -253,7 +256,7 @@ function dataURL(inline) {
   urlCache.set(key, url);
   return url;
 }
-const extOf = (mime) => ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'video/mp4': 'mp4', 'audio/wav': 'wav' }[mime] || mime.split('/')[1] || 'bin');
+const extOf = (mime) => ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'video/mp4': 'mp4', 'audio/wav': 'wav', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3' }[mime] || mime.split('/')[1] || 'bin');
 const fileIcon = (mime) => mime.startsWith('image/') ? '🖼' : mime.startsWith('video/') ? '🎞' : mime.startsWith('audio/') ? '🎵' : mime === 'application/pdf' ? '📕' : '📄';
 function fmtUsage(u) {
   if (!u) return '';
@@ -775,6 +778,11 @@ function renderComposer() {
     html += `<button class="chip" data-open-panel>🔊 ${esc(v.name || v.id)}（${v.gender}·${esc(v.trait)}）</button>`;
     html += `<button class="chip ${state.playingVoice === v.id ? 'on' : ''}" data-vplay="${esc(v.id)}">${state.playingVoice === v.id ? '⏹ 停止试听' : '▶ 试听音色'}</button>`;
   }
+  if (kind === 'music') {
+    const isL3 = /lyria-3/i.test(state.conv.model);
+    if (isL3) html += `<button class="chip ${s.mInstrumental ? 'on' : ''}" data-chip="mInstrumental">🎹 纯音乐</button>`;
+    html += `<button class="chip" data-open-panel>${isL3 ? (/pro/i.test(state.conv.model) ? '🎼 完整歌曲 · 最长3分钟' : '🎵 30秒片段 · 含词曲') : '🎻 30秒纯音乐 WAV'}</button>`;
+  }
   $('#quickChips').innerHTML = html;
   const memCount = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false).length : 0;
   const hints = [];
@@ -889,6 +897,7 @@ async function runModel(conv = state.conv) {
   try {
     if (info.kind === 'chat' || info.kind === 'image') await runStream(conv, info, history, msg, abort);
     else if (info.kind === 'tts') await runTTS(conv, info, history, msg, abort);
+    else if (info.kind === 'music') await runMusic(conv, info, history, msg, abort);
     else if (info.kind === 'video') await runVideo(conv, info, history, msg, abort);
   } catch (e) {
     if (e.name === 'AbortError') { if (!msg.parts.length) msg.meta.error = '已停止生成'; }
@@ -949,6 +958,23 @@ async function runTTS(conv, info, history, msg, abort) {
   if (abort?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   msg.parts.push({ inlineData: { mimeType: r.mimeType, data: r.data } });
   msg.meta.usage = r.usage;
+}
+
+async function runMusic(conv, info, history, msg, abort) {
+  const last = history.at(-1);
+  const promptText = last.parts.filter((p) => p.text).map((p) => p.text).join('\n');
+  const imgs = last.parts.filter((p) => p.inlineData?.mimeType.startsWith('image/')).map((p) => p.inlineData);
+  if (!promptText && !imgs.length) throw new Error('请描述想要的音乐风格或上传参考图');
+  const s = conv.settings;
+  const r = await apiJSON('/api/music', {
+    model: conv.model,
+    prompt: promptText,
+    images: imgs,
+    settings: { instrumental: !!s.mInstrumental, lyrics: s.mLyrics || '', negativePrompt: s.mNegative || '', seed: s.mSeed, sampleCount: s.mCount || 1 },
+  });
+  if (abort?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  (r.audios || []).forEach((a) => msg.parts.push({ inlineData: { mimeType: a.mimeType, data: a.data } }));
+  if (r.texts?.length) msg.parts.push({ text: r.texts.join('\n\n') });
 }
 
 async function runVideo(conv, info, history, msg, abort) {
@@ -1092,6 +1118,20 @@ function renderPanel() {
       }).join('')}</div></div>`;
     html += `<div class="field"><label>语气风格<small>可选</small></label><input type="text" data-k="ttsStyle" value="${esc(s.ttsStyle)}" placeholder="如：用温柔开心的语气说">
       <div class="chips" style="margin-top:6px">${['温柔舒缓', '热情开心', '专业新闻播报', '悬疑低语讲故事', '活泼俏皮'].map((st) => `<button type="button" class="chip" data-tts-style="${st}">${st}</button>`).join('')}</div></div>`;
+  }
+  if (kind === 'music') {
+    const isL3 = /lyria-3/i.test(c.model);
+    if (isL3) {
+      html += tog('mInstrumental', '纯音乐模式（无人声）', '关闭时支持人声与自动作词');
+      if (!s.mInstrumental) {
+        html += `<div class="field"><label>自定义歌词<small>可选，留空自动作词</small></label><textarea data-k="mLyrics" placeholder="[Verse 1]&#10;写下你的歌词，或留空由 Lyria 3 自动创作…">${esc(s.mLyrics)}</textarea></div>`;
+      }
+    } else {
+      html += seg('mCount', '生成数量', [[1], [2], [3], [4]]);
+      html += `<div class="field"><label>随机种子<small>留空=随机，填写时固定生成 1 首</small></label><input type="number" data-k="mSeed" value="${esc(s.mSeed)}"></div>`;
+    }
+    html += `<div class="field"><label>排除元素<small>不想出现的乐器或风格</small></label><input type="text" data-k="mNegative" value="${esc(s.mNegative)}" placeholder="如：heavy metal, drums, distorted"></div>`;
+    html += `<p class="hint">${isL3 ? 'Lyria 3 支持中英文提示词、歌词人声与上传参考图配乐；Pro 最长约 3 分钟，Clip 为 30 秒片段，单次约需 15~45 秒。' : 'Lyria 2 专注 30 秒 48kHz 纯音乐 WAV，建议用英文描述乐器、BPM 与情绪。'}</p>`;
   }
   html += `<div class="sec-title">默认值</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn" id="saveDefaults">设为新对话默认</button><button type="button" class="btn" id="resetSettings">恢复出厂</button></div>`;
   $('#panelBody').innerHTML = html;
@@ -1413,7 +1453,7 @@ function renderSettings() {
           ${modelRows.length ? modelRows.map((r) => {
             const pct = totalUsd > 0 ? Math.max(2, Math.round((r.usd / totalUsd) * 100)) : 0;
             const kindLabel = KINDS[r.kind]?.label || r.kind;
-            const mediaCol = r.kind === 'video' ? `${r.vidSec} 秒` : r.kind === 'image' ? `${r.imgs} 张` : r.cacheTok ? `缓存 ${fmtNum(r.cacheTok)}` : '—';
+            const mediaCol = r.kind === 'video' ? `${r.vidSec} 秒` : r.kind === 'image' ? `${r.imgs} 张` : r.kind === 'music' ? `${r.calls} 首` : r.cacheTok ? `缓存 ${fmtNum(r.cacheTok)}` : '—';
             const unitTxt = formatUnitPrice(r.model, r.kind, mode);
             return `<tr>
               <td><b>${esc(modelInfo(r.model).name)}</b><br><small style="color:var(--ink-3);font-family:var(--mono)">${esc(r.model)}</small></td>

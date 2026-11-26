@@ -123,11 +123,28 @@ export const MODEL_PRICING = {
     promo: { in: 0.5, out: 10.0, cache: 0.05, tag: '2.5 TTS 参考价' },
     standard: { in: 0.5, out: 10.0, cache: 0.05, tag: '2.5 TTS 参考价' },
   },
+
+  // —— 音乐生成 ——
+  'lyria-3-pro-preview': {
+    promo: { musicPerTrack: 0.08, tag: '官方价 ($0.08/首 · 最长3分钟)' },
+    standard: { musicPerTrack: 0.08, tag: '官方价 ($0.08/首 · 最长3分钟)' },
+  },
+  'lyria-3-clip-preview': {
+    promo: { musicPerTrack: 0.04, tag: '官方价 ($0.04/首 · 30秒片段)' },
+    standard: { musicPerTrack: 0.04, tag: '官方价 ($0.04/首 · 30秒片段)' },
+  },
+  'lyria-002': {
+    promo: { musicPerTrack: 0.06, tag: '官方价 ($0.06/首 · 30秒WAV)' },
+    standard: { musicPerTrack: 0.06, tag: '官方价 ($0.06/首 · 30秒WAV)' },
+  },
 };
 
 export function getRate(modelId = '', mode = 'promo') {
   const row = MODEL_PRICING[modelId];
   if (row) return row[mode] || row.promo;
+  if (/lyria-3-pro/i.test(modelId)) return MODEL_PRICING['lyria-3-pro-preview'].promo;
+  if (/lyria-3/i.test(modelId)) return MODEL_PRICING['lyria-3-clip-preview'].promo;
+  if (/lyria/i.test(modelId)) return MODEL_PRICING['lyria-002'].promo;
   if (/veo.*lite/i.test(modelId)) return MODEL_PRICING['veo-3.1-lite-generate-001'].promo;
   if (/veo.*fast/i.test(modelId)) return MODEL_PRICING['veo-3.1-fast-generate-001'].promo;
   if (/veo/i.test(modelId)) return MODEL_PRICING['veo-3.1-generate-001'].promo;
@@ -144,6 +161,11 @@ export function getRate(modelId = '', mode = 'promo') {
 export function calcEventCost(ev, mode = 'promo') {
   const rate = getRate(ev.model, mode);
   if (ev.ok === false && !(ev.totalTokens > 0)) return { usd: 0, rate };
+
+  if (ev.kind === 'music') {
+    const n = Math.max(1, Number(ev.musicCount) || 1);
+    return { usd: n * (rate.musicPerTrack ?? 0.06), rate };
+  }
 
   if (ev.kind === 'video') {
     const secs = Number(ev.videoSeconds) || 0;
@@ -175,6 +197,7 @@ export function calcEventCost(ev, mode = 'promo') {
 
 export function formatUnitPrice(modelId, kind, mode = 'promo') {
   const r = getRate(modelId, mode);
+  if (kind === 'music' && r.musicPerTrack) return `$${r.musicPerTrack}/首`;
   if (kind === 'video' && r.videoPerSec) {
     const p720 = r.videoPerSec['720p'];
     const p4k = r.videoPerSec['4k'];

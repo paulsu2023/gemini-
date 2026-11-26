@@ -475,6 +475,7 @@ async function recordUsageEvent(entry = {}, immediate = false) {
     imageCount: Number(entry.imageCount) || 0,
     videoSeconds: Number(entry.videoSeconds) || 0,
     videoCount: Number(entry.videoCount) || 0,
+    musicCount: Number(entry.musicCount) || 0,
     resolution: entry.resolution || '',
   };
   usageLedger.events.push(item);
@@ -991,6 +992,84 @@ function isOmniVideoModel(model = '') {
   const m = MODELS.find((x) => x.id === model);
   return m?.api === 'interactions' || /omni/i.test(model);
 }
+
+// 音乐生成：通道 A（Lyria 3 走 Vertex AI global Interactions API，支持歌词/人声/图生音乐）；通道 B（Lyria 2 走 us-central1 :predict）
+app.post('/api/music', auth, async (req, res) => {
+  const t0 = Date.now();
+  try {
+    const { model = 'lyria-3-clip-preview', prompt = '', images = [], settings = {} } = req.body;
+    const cleanPrompt = String(prompt || '').trim();
+    if (!cleanPrompt && !images.length) return res.status(400).json({ error: '请输入音乐描述或上传参考图片' });
+    recordUserActivity(req.userNickname, { type: 'music', model, preview: cleanPrompt });
+    const tok = await googleAuth.getAccessToken();
+    const isLyria3 = /lyria-3/i.test(model);
+
+    if (isLyria3) {
+      let fullPrompt = cleanPrompt;
+      if (settings.instrumental) fullPrompt += '\n[Instrumental only, no vocals]';
+      else if (settings.lyrics?.trim()) fullPrompt += `\nLyrics:\n${settings.lyrics.trim()}`;
+      if (settings.negativePrompt?.trim()) fullPrompt += `\n[Avoid: ${settings.negativePrompt.trim()}]`;
+      fullPrompt = fullPrompt.trim();
+
+      const input = images.length
+        ? [
+            ...images.map((img) => ({ type: 'image', data: img.data, mime_type: img.mimeType })),
+            ...(fullPrompt ? [{ type: 'text', text: fullPrompt }] : []),
+          ]
+        : fullPrompt;
+
+      const url = `https://aiplatform.googleapis.com/v1beta1/projects/${encodeURIComponent(PROJECT)}/locations/global/interactions`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, input, response_modalities: ['audio', 'text'] }),
+      });
+      const raw = await resp.text();
+      if (!resp.ok) throw new Error(raw);
+      const data = JSON.parse(raw);
+      const outputs = Array.isArray(data.outputs) ? data.outputs : [];
+      const audios = outputs
+        .filter((o) => o?.type === 'audio' && o.data)
+        .map((o) => ({ mimeType: o.mime_type || 'audio/mpeg', data: o.data }));
+      const texts = outputs
+        .filter((o) => o?.type === 'text' && o.text && o.text.trim() !== '<instrumental>')
+        .map((o) => o.text.trim());
+      if (!audios.length) throw new Error(texts.join('\n') || '模型未返回音频（可能触发版权或安全策略过滤）');
+      recordUsageEvent({ user: req.userNickname, model, kind: 'music', ok: true, ms: Date.now() - t0, musicCount: audios.length });
+      return res.json({ audios, texts });
+    }
+
+    // 通道 B：Lyria 2 (lyria-002) 纯音乐 WAV，走 us-central1 :predict
+    const loc = resolveLocation(model, 'us-central1');
+    const instance = { prompt: cleanPrompt || 'Warm instrumental background music' };
+    if (settings.negativePrompt?.trim()) instance.negative_prompt = settings.negativePrompt.trim();
+    const parameters = {};
+    if (settings.seed !== undefined && settings.seed !== '' && settings.seed !== null) {
+      instance.seed = Number(settings.seed);
+    } else if (Number(settings.sampleCount) > 1) {
+      parameters.sample_count = Math.min(4, Number(settings.sampleCount));
+    }
+    const url = `https://${loc}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(PROJECT)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${encodeURIComponent(model)}:predict`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instances: [instance], parameters }),
+    });
+    const raw = await resp.text();
+    if (!resp.ok) throw new Error(raw);
+    const data = JSON.parse(raw);
+    const audios = (data.predictions || [])
+      .filter((p) => p?.bytesBase64Encoded)
+      .map((p) => ({ mimeType: p.mimeType || 'audio/wav', data: p.bytesBase64Encoded }));
+    if (!audios.length) throw new Error('模型未返回音频（提示词可能触发安全过滤，建议改用英文纯音乐描述）');
+    recordUsageEvent({ user: req.userNickname, model, kind: 'music', ok: true, ms: Date.now() - t0, musicCount: audios.length });
+    res.json({ audios, texts: [] });
+  } catch (e) {
+    const m = errMsg(e);
+    recordUsageEvent({ user: req.userNickname, model: req.body?.model || 'lyria-3-clip-preview', kind: 'music', ok: false, error: m, ms: Date.now() - t0 });
+    res.status(500).json({ error: m });
+  }
+});
 
 app.post('/api/video', auth, async (req, res) => {
   try {
