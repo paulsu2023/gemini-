@@ -789,6 +789,12 @@ const STUDIO_TOOLS = [{
         type: 'OBJECT',
         properties: {
           prompt: { type: 'STRING', description: 'Detailed visual prompt describing subject, composition, lighting, and style.' },
+          model: {
+            type: 'STRING',
+            description: 'Optional image model ID. Choose based on user request or explicit mention: gemini-nano-banana-2.1 (default fast high-quality ~$0.034), gemini-3-pro-image (best quality / 2K / 4K / posters ~$0.134), gemini-3.1-flash-image (fast ~$0.067), gemini-3.1-flash-lite-image (budget ~$0.034), gemini-2.5-flash-image (~$0.039).',
+          },
+          imageSize: { type: 'STRING', description: 'Optional resolution: 1K, 2K, or 4K.' },
+          aspectRatio: { type: 'STRING', description: 'Optional aspect ratio like 1:1, 16:9, 9:16, 3:4, 4:3.' },
           useReferenceImage: { type: 'BOOLEAN', description: 'Set true if editing or referencing an image already uploaded or generated in the conversation.' },
         },
         required: ['prompt'],
@@ -801,6 +807,10 @@ const STUDIO_TOOLS = [{
         type: 'OBJECT',
         properties: {
           prompt: { type: 'STRING', description: 'Detailed video scene, camera motion, lighting, and audio/ambience prompt.' },
+          model: {
+            type: 'STRING',
+            description: 'Optional video model ID. Choose based on user request or explicit mention: gemini-omni-1.2-flash (default, up to 15s with audio ~$0.07/s), gemini-omni-1.1-flash-preview (~$0.07/s), veo-3.1-generate-001 (top cinema quality $0.40/s), veo-3.1-fast-generate-001 (fast $0.10/s), veo-3.1-lite-generate-001 (most affordable $0.05/s).',
+          },
           durationSeconds: { type: 'NUMBER', description: 'Optional video duration in seconds (4, 6, 8, 10, or 15).' },
           useReferenceImage: { type: 'BOOLEAN', description: 'Set true if animating an uploaded or previously generated image.' },
         },
@@ -814,6 +824,10 @@ const STUDIO_TOOLS = [{
         type: 'OBJECT',
         properties: {
           prompt: { type: 'STRING', description: 'Rich musical prompt describing genre, mood, instruments, tempo/BPM, and vibe.' },
+          model: {
+            type: 'STRING',
+            description: 'Optional music model ID. Choose based on user request or explicit mention: lyria-3-pro-preview (full song up to 3 min with vocals/lyrics $0.08), lyria-3-clip-preview (30s clip/BGM with vocals/lyrics $0.04), lyria-002 (30s 48kHz pure instrumental WAV $0.06).',
+          },
           instrumental: { type: 'BOOLEAN', description: 'True for pure instrumental without vocals; false if vocals/singing are desired.' },
           lyrics: { type: 'STRING', description: 'Optional lyrics if the user provided or wants specific lyrics.' },
         },
@@ -827,6 +841,10 @@ const STUDIO_TOOLS = [{
         type: 'OBJECT',
         properties: {
           text: { type: 'STRING', description: 'The exact text to be spoken aloud.' },
+          model: {
+            type: 'STRING',
+            description: 'Optional TTS model ID. Choose based on user request or explicit mention: gemini-3.8-flash-tts (default natural expressiveness), gemini-3.8-flash-lite-tts (fast/low-cost), gemini-2.5-pro-tts (high-precision Pro TTS), gemini-2.5-flash-tts.',
+          },
           style: { type: 'STRING', description: 'Optional speaking tone or style instruction (e.g. 温柔舒缓、新闻播报).' },
         },
         required: ['text'],
@@ -835,7 +853,7 @@ const STUDIO_TOOLS = [{
   ],
 }];
 
-const STUDIO_SYS_NOTE = '你正运行在「全能综合模式」下。普通问答、写作、编程、分析请直接文字回复；当用户明确要求画图/改图、生成视频、创作音乐/歌曲或语音朗读/配音时，请直接调用对应的工具（generate_image / generate_video / generate_music / generate_speech），可同时调用多个工具；调用工具前可简短说明一句，不要假装已经生成媒体文件。';
+const STUDIO_SYS_NOTE = '你正运行在「全能综合模式」下。普通问答、写作、编程、分析请直接文字回复；当用户要求画图/改图、生成视频、创作音乐/歌曲或语音朗读/配音时，请直接调用对应工具（generate_image / generate_video / generate_music / generate_speech），可同时调用多个工具。关于工具的 model 参数：如果用户在对话里明确点名了某个模型（如「用 Gemini 3 Pro Image」「用 Veo 3.1 Fast」「用 Lyria 3 Pro」「用 2.5 Pro TTS」），务必传入对应的准确模型 ID；若未点名，可根据任务需求自主选择最合适的模型（如海报/4K 选 gemini-3-pro-image、日常快速画图选 gemini-nano-banana-2.1、完整歌曲选 lyria-3-pro-preview、30秒BGM选 lyria-3-clip-preview、纯音乐WAV选 lyria-002）。调用工具前可简短说明一句，不要假装已经生成媒体文件。';
 
 function buildConfig(body) {
   const s = body.settings || {};
