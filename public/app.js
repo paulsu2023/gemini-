@@ -273,7 +273,17 @@ function fmtUsage(u) {
 function newDraft(model) {
   const preset = state.presets.find((p) => p.id === state.prefs.defaultPreset);
   const m = model || state.conv?.model || state.prefs.defaultModel;
-  return { id: uid(), title: '新对话', model: m, systemInstruction: preset?.content || '', settings: { ...state.defaults }, messages: [], createdAt: Date.now(), updatedAt: Date.now(), draft: true };
+  const savedBrain = LS.get('studioBrain', '');
+  const settings = { ...state.defaults, ...(savedBrain ? { studioChat: savedBrain } : {}) };
+  return { id: uid(), title: '新对话', model: m, systemInstruction: preset?.content || '', settings, messages: [], createdAt: Date.now(), updatedAt: Date.now(), draft: true };
+}
+function setStudioBrain(id) {
+  if (!id || !state.conv) return;
+  state.conv.settings.studioChat = id;
+  LS.set('studioBrain', id);
+  renderHeader(); renderWelcome(); renderPanel(); renderComposer();
+  if (!state.conv.draft) saveConv();
+  toast(`🧠 综合分析大脑已切换为：${modelInfo(id).name}`);
 }
 async function saveConv(c = state.conv) {
   if (!c || !c.messages.length) return;
@@ -584,12 +594,22 @@ function renderWelcome() {
       ${bodyHtml}
     </div>`;
   }
+  if (kind === 'studio') {
+    const curBrain = state.conv.settings.studioChat || 'gemini-3.8-flash';
+    const chatModels = state.models.filter((m) => m.kind === 'chat');
+    extra = `<div class="studio-brain-bar">
+      <div class="studio-brain-head"><span>🧠 选择综合分析模型（负责理解提示词与调度工具）</span><small>点击切换，已自动记忆偏好</small></div>
+      <div class="studio-brain-pills">${chatModels.map((m) => `<button type="button" data-studio-brain="${esc(m.id)}" class="${m.id === curBrain ? 'on' : ''}">${esc(m.name)}</button>`).join('')}</div>
+    </div>`;
+  }
   w.innerHTML = `<h1>${hi}，<br>今天想用 <em>Gemini</em> 做点什么？</h1>
-    <p class="sub">对话、画图、做视频、合成语音 —— 选一种开始，随时在顶部切换模型。</p>
+    <p class="sub">对话、画图、做视频、合成语音、写歌、综合工作台 —— 选一种开始，随时在顶部切换模型。</p>
     <div class="mode-cards">${Object.entries(KINDS).map(([k, v]) => `<button class="mode-card ${k === kind ? 'active' : ''}" data-kind="${k}" style="--k:var(--${k})"><div class="ic">${v.icon}</div><b>${v.label}</b><small>${v.desc}</small></button>`).join('')}</div>
-    <div class="examples">${(EXAMPLES[kind] || []).map((t) => `<button>${esc(t)}</button>`).join('')}</div>${extra}`;
+    ${kind === 'studio' ? extra : ''}<div class="examples">${(EXAMPLES[kind] || []).map((t) => `<button>${esc(t)}</button>`).join('')}</div>${kind === 'studio' ? '' : extra}`;
 }
 $('#welcome').addEventListener('click', (e) => {
+  const sbBtn = e.target.closest('[data-studio-brain]');
+  if (sbBtn) { setStudioBrain(sbBtn.dataset.studioBrain); return; }
   const playBtn = e.target.closest('[data-vplay]');
   if (playBtn) { e.stopPropagation(); toggleVoiceSample(playBtn.dataset.vplay); return; }
   const bankBtn = e.target.closest('[data-vbank]');
@@ -802,6 +822,9 @@ function renderComposer() {
     html += `<button class="chip" data-open-panel>${isL3 ? (/pro/i.test(state.conv.model) ? '🎼 完整歌曲 · 最长3分钟' : '🎵 30秒片段 · 含词曲') : '🎻 30秒纯音乐 WAV'}</button>`;
   }
   if (kind === 'studio') {
+    const curBrain = s.studioChat || 'gemini-3.8-flash';
+    const chatModels = state.models.filter((m) => m.kind === 'chat');
+    html += `<select id="studioBrainSelect" class="chip-select" title="切换分析提示词的聊天大脑模型">${chatModels.map((m) => `<option value="${esc(m.id)}" ${m.id === curBrain ? 'selected' : ''}>🧠 ${esc(m.name)}</option>`).join('')}</select>`;
     const curF = s.studioForce || 'auto';
     const forceBtns = [['auto', '✨ 自动判断'], ['chat', '💬 对话'], ['image', '🎨 画图'], ['video', '🎬 视频'], ['music', '🎵 音乐'], ['tts', '🔊 语音']];
     html += forceBtns.map(([v, l]) => `<button class="chip ${curF === v ? 'on' : ''}" data-studio-force="${v}">${l}</button>`).join('');
@@ -825,6 +848,9 @@ function renderComposer() {
   $('#sendBtn').classList.toggle('stop', busy);
   $('#sendBtn').textContent = busy ? '' : '↑';
 }
+$('#quickChips').addEventListener('change', (e) => {
+  if (e.target.id === 'studioBrainSelect') setStudioBrain(e.target.value);
+});
 $('#quickChips').addEventListener('click', (e) => {
   const vp = e.target.closest('[data-vplay]');
   if (vp) { toggleVoiceSample(vp.dataset.vplay); renderComposer(); return; }
@@ -1369,7 +1395,7 @@ $('#panelBody').addEventListener('input', (e) => {
       c.settings[k] = Number(el.value);
       $$(`[data-k="${k}"]`, $('#panelBody')).forEach((x) => { if (x !== el) x.value = el.value; });
     } else c.settings[k] = el.value;
-    if (k === 'studioChat') renderHeader();
+    if (k === 'studioChat') { LS.set('studioBrain', el.value); renderHeader(); renderWelcome(); }
     renderComposer();
   } else return;
   clearTimeout(renderPanel._t); renderPanel._t = setTimeout(() => !c.draft && saveConv(c), 400);
