@@ -780,11 +780,71 @@ function cleanContents(contents = []) {
   }).filter((c) => c.parts.length);
 }
 
+const STUDIO_TOOLS = [{
+  functionDeclarations: [
+    {
+      name: 'generate_image',
+      description: 'Generate a new image or edit an existing image when the user asks to draw, paint, design, illustrate, or modify a picture.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          prompt: { type: 'STRING', description: 'Detailed visual prompt describing subject, composition, lighting, and style.' },
+          useReferenceImage: { type: 'BOOLEAN', description: 'Set true if editing or referencing an image already uploaded or generated in the conversation.' },
+        },
+        required: ['prompt'],
+      },
+    },
+    {
+      name: 'generate_video',
+      description: 'Generate a video clip when the user asks to create, shoot, or animate a video.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          prompt: { type: 'STRING', description: 'Detailed video scene, camera motion, lighting, and audio/ambience prompt.' },
+          durationSeconds: { type: 'NUMBER', description: 'Optional video duration in seconds (4, 6, 8, 10, or 15).' },
+          useReferenceImage: { type: 'BOOLEAN', description: 'Set true if animating an uploaded or previously generated image.' },
+        },
+        required: ['prompt'],
+      },
+    },
+    {
+      name: 'generate_music',
+      description: 'Compose a song or instrumental track when the user asks to create music, BGM, soundtrack, or a song.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          prompt: { type: 'STRING', description: 'Rich musical prompt describing genre, mood, instruments, tempo/BPM, and vibe.' },
+          instrumental: { type: 'BOOLEAN', description: 'True for pure instrumental without vocals; false if vocals/singing are desired.' },
+          lyrics: { type: 'STRING', description: 'Optional lyrics if the user provided or wants specific lyrics.' },
+        },
+        required: ['prompt'],
+      },
+    },
+    {
+      name: 'generate_speech',
+      description: 'Convert text into spoken audio (TTS) when the user asks to read text aloud, dub, or create a voiceover.',
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          text: { type: 'STRING', description: 'The exact text to be spoken aloud.' },
+          style: { type: 'STRING', description: 'Optional speaking tone or style instruction (e.g. 温柔舒缓、新闻播报).' },
+        },
+        required: ['text'],
+      },
+    },
+  ],
+}];
+
+const STUDIO_SYS_NOTE = '你正运行在「全能综合模式」下。普通问答、写作、编程、分析请直接文字回复；当用户明确要求画图/改图、生成视频、创作音乐/歌曲或语音朗读/配音时，请直接调用对应的工具（generate_image / generate_video / generate_music / generate_speech），可同时调用多个工具；调用工具前可简短说明一句，不要假装已经生成媒体文件。';
+
 function buildConfig(body) {
   const s = body.settings || {};
   const model = body.model || '';
   const cfg = {};
-  if (body.systemInstruction?.trim()) cfg.systemInstruction = body.systemInstruction;
+  const sysParts = [];
+  if (body.systemInstruction?.trim()) sysParts.push(body.systemInstruction.trim());
+  if (body.studioTools) sysParts.push(STUDIO_SYS_NOTE);
+  if (sysParts.length) cfg.systemInstruction = sysParts.join('\n\n');
   for (const k of ['temperature', 'topP', 'topK', 'maxOutputTokens', 'seed', 'presencePenalty', 'frequencyPenalty']) {
     if (s[k] !== undefined && s[k] !== null && s[k] !== '') cfg[k] = Number(s[k]);
   }
@@ -800,12 +860,16 @@ function buildConfig(body) {
   } else if (s.includeThoughts) {
     cfg.thinkingConfig = { includeThoughts: true };
   }
-  if (s.jsonMode) cfg.responseMimeType = 'application/json';
-  const tools = [];
-  if (s.googleSearch) tools.push({ googleSearch: {} });
-  if (s.urlContext) tools.push({ urlContext: {} });
-  if (s.codeExecution) tools.push({ codeExecution: {} });
-  if (tools.length) cfg.tools = tools;
+  if (s.jsonMode && !body.studioTools) cfg.responseMimeType = 'application/json';
+  if (body.studioTools) {
+    cfg.tools = STUDIO_TOOLS;
+  } else {
+    const tools = [];
+    if (s.googleSearch) tools.push({ googleSearch: {} });
+    if (s.urlContext) tools.push({ urlContext: {} });
+    if (s.codeExecution) tools.push({ codeExecution: {} });
+    if (tools.length) cfg.tools = tools;
+  }
   if (body.kind === 'image') {
     cfg.responseModalities = ['TEXT', 'IMAGE'];
     const ic = {};
@@ -849,6 +913,10 @@ app.post('/api/chat', auth, async (req, res) => {
           const cand = chunk.candidates?.[0];
           for (const p of cand?.content?.parts || []) {
             emitted = true;
+            if (p.functionCall) {
+              send('toolCall', p.functionCall);
+              continue;
+            }
             if (!p.thought && p.inlineData?.mimeType?.startsWith('image/')) imageCount++;
             send('part', p);
           }

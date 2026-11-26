@@ -15,6 +15,7 @@ const KINDS = {
   video: { label: '视频', icon: '🎬', desc: 'Gemini Omni / Veo 3.1 文生与图生视频', ph: '描述视频画面与镜头运动；可上传参考图或首尾帧…' },
   tts: { label: '语音', icon: '🔊', desc: '文字转自然语音', ph: '输入要朗读的文字…' },
   music: { label: '音乐', icon: '🎵', desc: 'Lyria 3 词曲人声 / 纯音乐生成', ph: '描述想要的曲风、情绪、乐器、节奏或歌词（Lyria 3 支持上传参考图配乐）…' },
+  studio: { label: '综合', icon: '✨', desc: '单窗口自动融合对话、画图、视频、音乐、语音', ph: '像平时一样聊天，或直接说「画一张…」「做个视频…」「写一首歌…」「把上面那段读出来」…' },
 };
 const EXAMPLES = {
   chat: ['用通俗的话解释一下量子纠缠', '帮我写一封得体的请假邮件', '今天有哪些重要科技新闻？（打开联网搜索）', '写一个 Python 脚本批量重命名图片'],
@@ -22,6 +23,7 @@ const EXAMPLES = {
   video: ['航拍镜头缓缓掠过云海之上的雪山日出', '一只柯基在海边沙滩上奔跑，慢动作，夕阳', '雨夜的东京街头，镜头跟随一把红伞前行', '咖啡倒入杯中的特写，奶泡形成拉花'],
   tts: ['大家好，欢迎来到 Gemini 体验，今天我们一起探索 AI 的无限可能。', '从前有座山，山里有座庙，庙里有个老和尚在给小和尚讲故事。'],
   music: ['一首温暖治愈的东京夏夜 City Pop，复古合成器贝斯，温柔中文女声演唱关于霓虹与晚风的歌', '清晨阳光咖啡馆里的轻快木吉他 Lo-Fi 纯音乐，100 BPM，温暖放松', '史诗级科幻电影预告片管弦乐，弦乐渐强与震撼铜管，充满希望感', '国风电子赛博混音，古筝与现代电子节拍结合，动感十足'],
+  studio: ['帮我写一段 50 字的治愈晚安小故事，并用温柔的语气朗读出来', '画一张雨夜赛博朋克猫咖啡馆插图，再配一首 30 秒治愈 Lo-Fi 纯音乐', '生成一段航拍雪山云海日出的 8 秒视频', '对比一下 Gemini 4 Neon 和 Gemini 3.8 Flash 的适用场景'],
 };
 const voiceInfo = (id) => {
   const core = TTS_VOICES.find((v) => v.id === id);
@@ -47,6 +49,8 @@ const DEFAULT_SETTINGS = {
   vAspect: '16:9', vDuration: 8, vResolution: '720p', vAudio: true, vCount: 1, vNegative: '', vEnhance: true, vPerson: 'allow_adult', vSeed: '',
   voice: 'Kore', ttsStyle: '',
   mInstrumental: false, mLyrics: '', mNegative: '', mSeed: '', mCount: 1,
+  studioChat: 'gemini-3.8-flash', studioImage: 'gemini-nano-banana-2.1', studioVideo: 'gemini-omni-1.2-flash',
+  studioMusic: 'lyria-3-clip-preview', studioTts: 'gemini-3.8-flash-tts', studioForce: 'auto',
 };
 const DEFAULT_PRESETS = [
   { id: 'none', name: '（无前置提示词）', content: '' },
@@ -686,6 +690,9 @@ function fillMsg(el, m) {
   if (meta.job && !meta.job.done) {
     body += `<div class="progress"><span>🎬 视频生成中 · 已等待 ${meta.job.elapsed || 0} 秒</span><div class="bar"><i></i></div></div>`;
   }
+  if (meta.studioStatus) {
+    body += `<div class="studio-status"><span>${esc(meta.studioStatus)}</span></div>`;
+  }
   if (meta.grounding?.groundingChunks?.length) {
     const links = meta.grounding.groundingChunks.filter((g) => g.web?.uri);
     body += `<div class="sources"><span class="lbl">🔎 参考来源${meta.grounding.webSearchQueries?.length ? '（搜索：' + esc(meta.grounding.webSearchQueries.join('、')) + '）' : ''}</span>
@@ -786,13 +793,23 @@ function renderComposer() {
     if (isL3) html += `<button class="chip ${s.mInstrumental ? 'on' : ''}" data-chip="mInstrumental">🎹 纯音乐</button>`;
     html += `<button class="chip" data-open-panel>${isL3 ? (/pro/i.test(state.conv.model) ? '🎼 完整歌曲 · 最长3分钟' : '🎵 30秒片段 · 含词曲') : '🎻 30秒纯音乐 WAV'}</button>`;
   }
+  if (kind === 'studio') {
+    const curF = s.studioForce || 'auto';
+    const forceBtns = [['auto', '✨ 自动判断'], ['chat', '💬 对话'], ['image', '🎨 画图'], ['video', '🎬 视频'], ['music', '🎵 音乐'], ['tts', '🔊 语音']];
+    html += forceBtns.map(([v, l]) => `<button class="chip ${curF === v ? 'on' : ''}" data-studio-force="${v}">${l}</button>`).join('');
+    const subMap = { image: s.studioImage || 'gemini-nano-banana-2.1', video: s.studioVideo || 'gemini-omni-1.2-flash', music: s.studioMusic || 'lyria-3-clip-preview' };
+    if (subMap[curF]) {
+      const fEst = estimateRunCost(subMap[curF], curF, s);
+      if (fEst) html += `<button class="chip cost" data-open-panel title="${esc(fEst.detail)}">💰 预估 ${esc(fEst.short)}</button>`;
+    }
+  }
   const est = estimateRunCost(state.conv.model, kind, s);
   if (est) html += `<button class="chip cost" data-open-panel title="${esc(est.detail + (est.tag ? ' · ' + est.tag : ''))}">💰 预估 ${esc(est.short)}</button>`;
   $('#quickChips').innerHTML = html;
   const memCount = state.prefs.memoryEnabled !== false ? state.memories.filter((m) => m.enabled !== false).length : 0;
   const hints = [];
-  if (state.conv.systemInstruction && (kind === 'chat' || kind === 'image')) hints.push('✓ 前置提示词');
-  if (memCount && (kind === 'chat' || kind === 'image')) hints.push(`🧠 记忆 ${memCount} 条`);
+  if (state.conv.systemInstruction && (kind === 'chat' || kind === 'image' || kind === 'studio')) hints.push('✓ 前置提示词');
+  if (memCount && (kind === 'chat' || kind === 'image' || kind === 'studio')) hints.push(`🧠 记忆 ${memCount} 条`);
   $('#composerHint').textContent = hints.join(' · ');
   const busy = isBusy();
   $('#sendBtn').classList.toggle('stop', busy);
@@ -801,6 +818,8 @@ function renderComposer() {
 $('#quickChips').addEventListener('click', (e) => {
   const vp = e.target.closest('[data-vplay]');
   if (vp) { toggleVoiceSample(vp.dataset.vplay); renderComposer(); return; }
+  const sf = e.target.closest('[data-studio-force]');
+  if (sf) { state.conv.settings.studioForce = sf.dataset.studioForce; renderComposer(); renderPanel(); if (!state.conv.draft) saveConv(); return; }
   const c = e.target.closest('[data-chip]');
   if (c) { const k = c.dataset.chip; state.conv.settings[k] = !state.conv.settings[k]; renderComposer(); renderPanel(); if (!state.conv.draft) saveConv(); }
   if (e.target.closest('[data-open-panel]')) $('#panel').classList.remove('closed');
@@ -901,6 +920,7 @@ async function runModel(conv = state.conv) {
   const t0 = Date.now();
   try {
     if (info.kind === 'chat' || info.kind === 'image') await runStream(conv, info, history, msg, abort);
+    else if (info.kind === 'studio') await runStudio(conv, info, history, msg, abort);
     else if (info.kind === 'tts') await runTTS(conv, info, history, msg, abort);
     else if (info.kind === 'music') await runMusic(conv, info, history, msg, abort);
     else if (info.kind === 'video') await runVideo(conv, info, history, msg, abort);
@@ -923,18 +943,22 @@ async function runModel(conv = state.conv) {
   }
 }
 
-async function runStream(conv, info, history, msg, abort) {
+async function runStream(conv, info, history, msg, abort, opts = {}) {
   const s = conv.settings;
+  const targetModel = opts.model || conv.model;
+  const targetKind = opts.kind || info.kind;
+  const targetLoc = opts.location || info.location;
   const settings = { ...s, stopSequences: s.stopSequences ? s.stopSequences.split(/[,，\n]/).map((x) => x.trim()).filter(Boolean) : [] };
-  if (info.kind === 'image') Object.assign(settings, { includeThoughts: s.includeThoughts, thinkingLevel: 'auto', codeExecution: false, urlContext: false, jsonMode: false });
+  if (targetKind === 'image') Object.assign(settings, { includeThoughts: s.includeThoughts, thinkingLevel: 'auto', codeExecution: false, urlContext: false, jsonMode: false });
   const res = await api('/api/chat', {
     method: 'POST', signal: abort.signal,
-    body: JSON.stringify({ model: conv.model, location: info.location, kind: info.kind, contents: buildContents(history), systemInstruction: composeSystemInstruction(conv.systemInstruction), settings }),
+    body: JSON.stringify({ model: targetModel, location: targetLoc, kind: targetKind, studioTools: !!opts.studioTools, contents: buildContents(history), systemInstruction: composeSystemInstruction(conv.systemInstruction), settings }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `请求失败 (${res.status})`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
+  const toolCalls = [];
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -945,14 +969,125 @@ async function runStream(conv, info, history, msg, abort) {
       const ev = /^event: (.+)$/m.exec(raw)?.[1];
       const data = JSON.parse(/^data: (.*)$/m.exec(raw)?.[1] || '{}');
       if (ev === 'part') mergePart(msg.parts, data);
+      else if (ev === 'toolCall') toolCalls.push(data);
       else if (ev === 'done') {
         msg.meta.usage = data.usage; msg.meta.grounding = data.grounding;
-        if (data.finishReason && !['STOP', 'MAX_TOKENS'].includes(data.finishReason) && !msg.parts.some((p) => !p.thought)) msg.meta.error = `模型未返回内容（${data.finishReason}）`;
+        if (data.finishReason && !['STOP', 'MAX_TOKENS'].includes(data.finishReason) && !msg.parts.some((p) => !p.thought) && !toolCalls.length) msg.meta.error = `模型未返回内容（${data.finishReason}）`;
         if (data.finishReason === 'MAX_TOKENS') msg.meta.error = '已达到最大输出长度，回答被截断';
       } else if (ev === 'error') msg.meta.error = data.message;
       if (state.conv === conv) scheduleUpdate(msg);
     }
   }
+  return toolCalls;
+}
+
+function findRecentImages(history, limit = 2) {
+  const out = [];
+  for (let i = history.length - 1; i >= 0 && out.length < limit; i--) {
+    const imgs = (history[i].parts || []).filter((p) => p.inlineData?.mimeType?.startsWith('image/')).map((p) => p.inlineData);
+    for (const img of imgs) {
+      if (out.length < limit) out.push(img);
+    }
+  }
+  return out;
+}
+
+async function runStudio(conv, info, history, msg, abort) {
+  const s = conv.settings;
+  const chatId = s.studioChat || 'gemini-3.8-flash';
+  const imgId = s.studioImage || 'gemini-nano-banana-2.1';
+  const vidId = s.studioVideo || 'gemini-omni-1.2-flash';
+  const musId = s.studioMusic || 'lyria-3-clip-preview';
+  const ttsId = s.studioTts || 'gemini-3.8-flash-tts';
+  const force = s.studioForce || 'auto';
+
+  const setStatus = (txt) => {
+    msg.meta.studioStatus = txt;
+    if (state.conv === conv) updateMsg(msg);
+  };
+
+  if (force === 'chat') {
+    await runStream(conv, modelInfo(chatId), history, msg, abort, { model: chatId, kind: 'chat' });
+    return;
+  }
+  if (force === 'image') {
+    const m = modelInfo(imgId);
+    const est = estimateRunCost(imgId, 'image', s);
+    setStatus(`🎨 正在调用 ${m.name} 生成图片${est ? `（${est.short}）` : ''}…`);
+    await runStream(conv, m, history, msg, abort, { model: imgId, kind: 'image' });
+    setStatus('');
+    return;
+  }
+  if (force === 'video') {
+    const m = modelInfo(vidId);
+    const est = estimateRunCost(vidId, 'video', s);
+    setStatus(`🎬 正在调用 ${m.name} 生成视频${est ? `（${est.short}）` : ''}…`);
+    const fakeConv = { ...conv, model: vidId };
+    await runVideo(fakeConv, m, history, msg, abort);
+    setStatus('');
+    return;
+  }
+  if (force === 'music') {
+    const m = modelInfo(musId);
+    const est = estimateRunCost(musId, 'music', s);
+    setStatus(`🎵 正在调用 ${m.name} 创作音乐${est ? `（${est.short}）` : ''}…`);
+    const fakeConv = { ...conv, model: musId };
+    await runMusic(fakeConv, m, history, msg, abort);
+    setStatus('');
+    return;
+  }
+  if (force === 'tts') {
+    const m = modelInfo(ttsId);
+    setStatus(`🔊 正在调用 ${m.name} 合成语音…`);
+    const fakeConv = { ...conv, model: ttsId };
+    await runTTS(fakeConv, m, history, msg, abort);
+    setStatus('');
+    return;
+  }
+
+  // 自动判断模式：由对话大脑原生 Function Calling 决定是否调用画图 / 视频 / 音乐 / 语音
+  const chatInfo = modelInfo(chatId);
+  const calls = await runStream(conv, chatInfo, history, msg, abort, { model: chatId, kind: 'chat', studioTools: true });
+  if (!calls.length || msg.meta.error) return;
+
+  for (const call of calls) {
+    if (abort?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const args = call.args || {};
+    if (call.name === 'generate_image') {
+      const m = modelInfo(imgId);
+      const est = estimateRunCost(imgId, 'image', s);
+      setStatus(`🎨 正在调用 ${m.name} 生成图片${est ? `（${est.short}）` : ''}…`);
+      const refImgs = args.useReferenceImage ? findRecentImages(history, 2) : history.at(-1).parts.filter((p) => p.inlineData?.mimeType?.startsWith('image/')).map((p) => p.inlineData);
+      const imgHist = [{ role: 'user', parts: [...refImgs.map((inlineData) => ({ inlineData })), { text: args.prompt || '' }] }];
+      await runStream(conv, m, imgHist, msg, abort, { model: imgId, kind: 'image' });
+    } else if (call.name === 'generate_music') {
+      const m = modelInfo(musId);
+      const est = estimateRunCost(musId, 'music', s);
+      setStatus(`🎵 正在调用 ${m.name} 创作音乐${est ? `（${est.short}）` : ''}…`);
+      const mSettings = { ...s, mInstrumental: args.instrumental ?? s.mInstrumental, mLyrics: args.lyrics ?? s.mLyrics };
+      const fakeConv = { ...conv, model: musId, settings: mSettings };
+      const imgs = history.at(-1).parts.filter((p) => p.inlineData?.mimeType?.startsWith('image/')).map((p) => p.inlineData);
+      const mHist = [{ role: 'user', parts: [...imgs.map((inlineData) => ({ inlineData })), { text: args.prompt || '' }] }];
+      await runMusic(fakeConv, m, mHist, msg, abort);
+    } else if (call.name === 'generate_speech') {
+      const m = modelInfo(ttsId);
+      setStatus(`🔊 正在调用 ${m.name} 合成语音…`);
+      const tSettings = { ...s, ttsStyle: args.style ?? s.ttsStyle };
+      const fakeConv = { ...conv, model: ttsId, settings: tSettings };
+      const tHist = [{ role: 'user', parts: [{ text: args.text || '' }] }];
+      await runTTS(fakeConv, m, tHist, msg, abort);
+    } else if (call.name === 'generate_video') {
+      const m = modelInfo(vidId);
+      const vSettings = { ...s, vDuration: args.durationSeconds || s.vDuration };
+      const est = estimateRunCost(vidId, 'video', vSettings);
+      setStatus(`🎬 正在调用 ${m.name} 生成视频${est ? `（${est.short}）` : ''}…`);
+      const refImgs = args.useReferenceImage ? findRecentImages(history, 2) : history.at(-1).parts.filter((p) => p.inlineData?.mimeType?.startsWith('image/')).map((p) => p.inlineData);
+      const fakeConv = { ...conv, model: vidId, settings: vSettings };
+      const vHist = [{ role: 'user', parts: [...refImgs.map((inlineData) => ({ inlineData })), { text: args.prompt || '' }] }];
+      await runVideo(fakeConv, m, vHist, msg, abort);
+    }
+  }
+  setStatus('');
 }
 
 async function runTTS(conv, info, history, msg, abort) {
@@ -1037,10 +1172,33 @@ function renderPanel() {
       <div class="cost-card-sub">${esc(panelEst.detail)}${panelEst.tag ? ` · ${esc(panelEst.tag)}` : ''}</div>
     </div>`;
   }
-  if (kind === 'chat' || kind === 'image') {
+  if (kind === 'chat' || kind === 'image' || kind === 'studio') {
     html += `<div class="field"><label>前置提示词（System）<small><button type="button" class="link-btn" id="savePreset">存为预设</button></small></label>
       <select id="presetSelect"><option value="">— 从提示词库选择 —</option>${state.presets.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
       <textarea id="sysInput" placeholder="例如：你是一位幽默的历史老师，回答要生动有趣…" style="margin-top:6px">${esc(c.systemInstruction)}</textarea></div>`;
+  }
+  if (kind === 'studio') {
+    const selModels = (k, field, label) => {
+      const list = state.models.filter((m) => m.kind === k);
+      const curVal = s[field] || list[0]?.id || '';
+      return `<div class="field"><label>${label}</label><select data-k="${field}">${list.map((m) => {
+        const p = formatPriceBadge(m.id, m.kind);
+        return `<option value="${esc(m.id)}" ${m.id === curVal ? 'selected' : ''}>${esc(m.name)}${p ? ` (${p})` : ''}</option>`;
+      }).join('')}</select></div>`;
+    };
+    html += `<div class="sec-title">综合引擎调度模型（附参考单价）</div>`;
+    html += selModels('chat', 'studioChat', '💬 对话大脑');
+    html += selModels('image', 'studioImage', '🎨 画图模型');
+    html += selModels('video', 'studioVideo', '🎬 视频模型');
+    html += selModels('music', 'studioMusic', '🎵 音乐模型');
+    html += selModels('tts', 'studioTts', '🔊 语音模型');
+    html += `<div class="sec-title">常用媒体参数</div>`;
+    html += seg('aspectRatio', '画图比例', [['auto', '自动'], ['1:1'], ['3:4'], ['9:16'], ['16:9']]);
+    html += seg('vDuration', '视频时长', [[4, '4 秒'], [6, '6 秒'], [8, '8 秒']]);
+    html += tog('mInstrumental', '音乐默认纯音乐', '关闭时支持人声与自动作词');
+    const curV = voiceInfo(s.voice);
+    html += `<div class="field"><label>语音朗读音色<small>${esc(curV.gender)} · ${esc(curV.trait)}</small></label><select data-k="voice">${TTS_VOICES.map((v) => `<option value="${esc(v.id)}" ${v.id === s.voice ? 'selected' : ''}>${esc(v.name)} (${v.gender}·${esc(v.trait)})</option>`).join('')}</select></div>`;
+    html += `<p class="hint">在综合窗口里直接像平时一样聊天，AI 会按你的意图自动调用画图、视频、音乐或语音；也可点击输入框下方的模式按钮手动指定本轮工具。</p>`;
   }
   if (kind === 'chat') {
     html += range('temperature', '温度 Temperature', 0, 2, 0.05, '越高越有创意');

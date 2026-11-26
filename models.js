@@ -1,6 +1,8 @@
 // 模型目录：kind 决定前端交互模式；location 为该模型在 Vertex AI 上可用的区域
 // 列表经本项目实测可用（2026-11）。新模型可在网页「自定义模型」里直接填 ID 体验。
 export const MODELS = [
+  // —— 综合工作台（单窗口融合对话 + 画图 + 视频 + 音乐 + 语音） ——
+  { id: 'gemini-studio-all', name: '全能综合模式', kind: 'studio', location: 'global', desc: '对话中按需自动画图、做视频、作曲、配音' },
   // —— 对话 ——
   { id: 'gemini-4-argon', name: 'Gemini 4 Argon', kind: 'chat', location: 'global', desc: '新一代旗舰，复杂推理' },
   { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', kind: 'chat', location: 'global', desc: '新一代旗舰，均衡' },
